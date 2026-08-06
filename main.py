@@ -71,38 +71,26 @@ class TrueTradeExchange:
 
     def fetch_ohlcv(self, symbol, timeframe='1m', limit=500):
         """دریافت داده‌های تاریخچه قیمت با فرمت صحیح (UDF)"""
-        import time
-        symbol_clean = symbol.replace('/', '')
+        symbol_clean = symbol.replace('/', '').upper()
         
         # تنظیم resolution بر اساس تایم‌فریم (طبق استاندارد UDF)
-        resolution = "1"  # مقدار پیش‌فرض برای ۱ دقیقه
-        if timeframe == "1m":
-            resolution = "1"
-        elif timeframe == "5m":
-            resolution = "5"
-        elif timeframe == "15m":
-            resolution = "15"
-        elif timeframe == "30m":
-            resolution = "30"
-        elif timeframe == "1h":
-            resolution = "60"
-        elif timeframe == "4h":
-            resolution = "240"
-        elif timeframe == "1d":
-            resolution = "D"
-        elif timeframe == "1w":
-            resolution = "W"
-        elif timeframe == "1M":
-            resolution = "M"
-        else:
-            # اگر تایم‌فریم نامشخص بود، از ۱ دقیقه استفاده کن
-            resolution = "1"
+        resolution_map = {
+            "1m": "1",
+            "5m": "5",
+            "15m": "15",
+            "30m": "30",
+            "1h": "60",
+            "4h": "240",
+            "1d": "D",
+            "1w": "W",
+            "1M": "M"
+        }
+        resolution = resolution_map.get(timeframe, "1")
         
         # تایم‌استمپ به ثانیه (طبق استاندارد UDF)
         to_timestamp = int(time.time())
-        from_timestamp = to_timestamp - (limit * 60)  # limit دقیقه قبل
+        from_timestamp = to_timestamp - (limit * 60)
         
-        # ساخت آدرس با فرمت صحیح (استفاده از countback به جای limit)
         uri = f"/futures/udf/history?symbol={symbol_clean}&resolution={resolution}&from={from_timestamp}&to={to_timestamp}&countback={limit}"
         
         try:
@@ -115,12 +103,12 @@ class TrueTradeExchange:
         if not data or data.get('s') != 'ok':
             return []
         
-        # تبدیل به فرمت استاندارد (لیست لیست‌ها) با تایم‌استمپ میلی‌ثانیه
+        # تبدیل به فرمت استاندارد با تایم‌استمپ میلی‌ثانیه
         ohlcv = []
         if data and 't' in data:
             for i in range(len(data['t'])):
                 ohlcv.append([
-                    data['t'][i] * 1000,  # تبدیل به میلی‌ثانیه برای هماهنگی با کد
+                    data['t'][i] * 1000,
                     float(data['o'][i]),
                     float(data['h'][i]),
                     float(data['l'][i]),
@@ -154,7 +142,7 @@ class TrueTradeExchange:
 
     def create_order(self, symbol, order_type, side, amount, price=None, params=None):
         """ایجاد سفارش جدید"""
-        symbol_clean = symbol.replace('/', '')
+        symbol_clean = symbol.replace('/', '').upper()
         side_upper = side.upper()
         trade_type = order_type.upper()
         
@@ -269,13 +257,13 @@ class Config:
     MAX_LOSS_USD = 3.5
     MIN_RR_RATIO = 2.0
     PYRAMIDING_MAX = 5
-    TIMEFRAME = "1m"  # ✅ تایم‌فریم ۱ دقیقه
+    TIMEFRAME = "1m"
     CANDLE_LIMIT = 500
     POLL_INTERVAL_SECONDS = 15
     SYMBOLS = ["LTC/USDT", "DOGE/USDT", "ETH/USDT"]
 
 # =====================================================================================
-# توابع محاسباتی استراتژی (تغییر نکرده)
+# توابع محاسباتی استراتژی
 # =====================================================================================
 def calc_rsi(close: pd.Series, length: int) -> pd.Series:
     delta = close.diff()
@@ -511,13 +499,13 @@ def send_full_report(exchange, states, cfg):
         if open_trades > 0:
             message += f"📈 **معاملات باز:** {open_trades} عدد\n"
             for pos in positions:
-                symbol = pos.get('symbol', 'N/A')
+                sym = pos.get('symbol', 'N/A')
                 side = pos.get('side', 'N/A')
                 entry = float(pos.get('entryPrice', 0))
                 mark = float(pos.get('markPrice', 0))
                 pnl = float(pos.get('unrealizedPnL', 0))
                 pnl_emoji = "🟢" if pnl >= 0 else "🔴"
-                message += f"   • {symbol} {side} | ورود: {entry:.4f} | فعلی: {mark:.4f} | {pnl_emoji} سود/ضرر: {pnl:.2f} USDT\n"
+                message += f"   • {sym} {side} | ورود: {entry:.4f} | فعلی: {mark:.4f} | {pnl_emoji} سود/ضرر: {pnl:.2f} USDT\n"
         else:
             message += f"📭 **هیچ معامله‌ای باز نیست.**\n"
         
@@ -647,6 +635,7 @@ def _execute_entry(exchange, symbol, direction, entry_price, stop_price, target_
         result = place_market_order_with_sl_tp(exchange, symbol, direction, qty, leverage, stop_price, target_price)
 
         state.open_positions.append({
+            "symbol": symbol,
             "direction": direction, "entry": entry_price, "stop": stop_price,
             "target": target_price, "qty": qty, "leverage": leverage,
             "order_ids": result, "opened_at": datetime.now(timezone.utc),
@@ -678,10 +667,13 @@ def _execute_entry(exchange, symbol, direction, entry_price, stop_price, target_
 def sync_closed_positions(exchange, symbol: str, state: SymbolState):
     try:
         positions = exchange.fetch_positions()
-        live_symbols = [p.get('symbol') for p in positions]
+        live_symbols = [str(p.get('symbol', '')).replace('/', '').upper() for p in positions]
+        
+        symbol_clean = symbol.replace('/', '').upper()
         
         for pos in state.open_positions[:]:
-            if pos.get('symbol') not in live_symbols:
+            pos_sym = str(pos.get('symbol', symbol)).replace('/', '').upper()
+            if pos_sym == symbol_clean and pos_sym not in live_symbols:
                 state.open_positions.remove(pos)
                 if not hasattr(state, 'closed_positions'):
                     state.closed_positions = []
@@ -714,7 +706,7 @@ def trading_loop():
     max_backoff_seconds = 300
     
     last_meal_report = None
-    global last_meal_report_time
+    last_meal_report_time = get_iran_time()
 
     while True:
         try:
@@ -768,9 +760,6 @@ def trading_loop():
             time.sleep(backoff)
 
 if __name__ == "__main__":
-    global last_meal_report_time
-    last_meal_report_time = get_iran_time()
-    
     flask_thread = threading.Thread(target=run_flask, daemon=True)
     flask_thread.start()
     print("[STARTUP] وب‌سرور Flask روی پورت 10000 راه‌اندازی شد.")
@@ -780,3 +769,4 @@ if __name__ == "__main__":
     
     print("[STARTUP] شروع حلقه معاملاتی اصلی...")
     trading_loop()
+
