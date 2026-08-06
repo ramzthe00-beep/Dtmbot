@@ -19,17 +19,17 @@ from datetime import datetime, timezone, timedelta
 from flask import Flask
 
 # =====================================================================================
-# کلیدهای API (جدید)
+# کلیدهای API (بهتر است از متغیرهای محیطی خوانده شوند)
 # =====================================================================================
-API_KEY = "pXJ3uOI3y7iPHxIgefQJ30PikXHqbQyVV9Ouj-_K"
-API_SECRET = "4cd23e00385ea761250034b420c86f40c4edb8e27c285c21572dbadf7e927b09"
+API_KEY = os.getenv("API_KEY", "pXJ3uOI3y7iPHxIgefQJ30PikXHqbQyVV9Ouj-_K")
+API_SECRET = os.getenv("API_SECRET", "4cd23e00385ea761250034b420c86f40c4edb8e27c285c21572dbadf7e927b09")
 BASE_URL = "https://apiv2.thetruetrade.io"
 
 # =====================================================================================
-# تنظیمات تلگرام
+# تنظیمات تلگرام (بهتر است از متغیرهای محیطی خوانده شوند)
 # =====================================================================================
-TELEGRAM_BOT_TOKEN = "8514469828:AAFC76EiVA7I4TFiX08jJ5N6-eKtOLMKitE"
-TELEGRAM_CHAT_ID = "7402770612"
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "8514469828:AAFC76EiVA7I4TFiX08jJ5N6-eKtOLMKitE")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "7402770612")
 
 # =====================================================================================
 # کلاس صرافی سفارشی برای TheTrueTrade
@@ -140,6 +140,7 @@ class TrueTradeExchange:
         """دریافت پوزیشن‌های باز (نیازمند امضا)"""
         uri = "/futures/positions"
         try:
+            # signed=True به صورت پیش‌فرض ارسال می‌شود
             data = self._request('GET', uri)
             positions = []
             if isinstance(data, list):
@@ -196,7 +197,7 @@ class TrueTradeExchange:
                 order_data["takeProfit"] = str(params['takeProfit'])
         
         uri = "/futures/positions"
-        result = self._request('POST', uri, order_data)
+        result = self._request('POST', uri, order_data)  # signed=True پیش‌فرض
         
         return {
             'id': result.get('positionId'),
@@ -212,7 +213,7 @@ class TrueTradeExchange:
         """دریافت موجودی کیف پول (نیازمند امضا)"""
         try:
             uri = "/accounting/assets"
-            data = self._request('GET', uri)
+            data = self._request('GET', uri)  # signed=True پیش‌فرض
             if isinstance(data, list):
                 for asset in data:
                     if asset.get('asset') == 'USDT' and asset.get('accountType') == 'futures':
@@ -658,9 +659,7 @@ def _execute_entry(exchange, symbol, direction, entry_price, stop_price, target_
         qty, leverage = compute_qty_and_leverage(exchange, symbol, entry_price, stop_price, cfg)
         if qty is None or qty <= 0:
             print(f"[SKIP] {symbol} {direction}: محاسبه حجم نامعتبر بود")
-            return
-
-        result = place_market_order_with_sl_tp(exchange, symbol, direction, qty, leverage, stop_price, target_price)
+            return        result = place_market_order_with_sl_tp(exchange, symbol, direction, qty, leverage, stop_price, target_price)
 
         state.open_positions.append({
             "symbol": symbol,
