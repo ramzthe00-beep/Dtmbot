@@ -3,7 +3,7 @@
 DTM Divergence Auto-Trading Bot - TheTrueTrade
 ====================================================================
 ربات معاملاتی کاملاً خودکار روی صرافی TheTrueTrade، بر اساس استراتژی واگرایی DTM.
-با ارسال سیگنال‌های معاملاتی و گزارش‌های دوره‌ای به تلگرام
+با ارسال سیگنال‌های معاملاتی و گزارش‌های دوره‌ای (صبح، نهار، شام) به تلگرام
 """
 
 import os
@@ -19,7 +19,7 @@ from datetime import datetime, timezone, timedelta
 from flask import Flask
 
 # =====================================================================================
-# کلیدهای API
+# کلیدهای API (برای تست مستقیماً در کد قرار داده شده‌اند)
 # =====================================================================================
 API_KEY = "J_MHEOhlJ3xSL8SQGWsyNz8xrGSxk0wQvA8WmXSX"
 API_SECRET = "3a0f92c090ba32cfb0be29542c0ed5bb01fd35452cd191fd7e86817e82cd38cd"
@@ -69,16 +69,40 @@ class TrueTradeExchange:
         return response.json()
 
     def fetch_ohlcv(self, symbol, timeframe='1m', limit=500):
-        """دریافت داده‌های تاریخچه قیمت"""
+        """دریافت داده‌های تاریخچه قیمت با فرمت صحیح"""
+        import time
         symbol_clean = symbol.replace('/', '')
-        uri = f"/futures/udf/history?symbol={symbol_clean}&resolution={timeframe}&limit={limit}"
+        
+        # تبدیل timeframe به فرمت عددی درست
+        resolution = "1"  # مقدار پیش‌فرض
+        if timeframe == "1m":
+            resolution = "1"
+        elif timeframe == "5m":
+            resolution = "5"
+        elif timeframe == "15m":
+            resolution = "15"
+        elif timeframe == "1h":
+            resolution = "60"
+        # می‌توانید بقیه تایم‌فریم‌ها را هم اضافه کنید
+        
+        # محاسبه تایم‌استمپ‌های پویا (بر اساس زمان فعلی)
+        to_timestamp = int(time.time() * 1000)
+        from_timestamp = to_timestamp - (limit * 60 * 1000)  # limit دقیقه قبل
+        
+        # ساخت آدرس درخواست با فرمت صحیح
+        uri = f"/futures/udf/history?symbol={symbol_clean}&resolution={resolution}&from={from_timestamp}&to={to_timestamp}"
         data = self._request('GET', uri)
         
+        # بررسی اینکه داده برگشته باشد
+        if not data or data.get('s') == 'no_data':
+            return []  # اگر داده‌ای نبود، لیست خالی برگردان
+        
+        # تبدیل پاسخ به فرمت استاندارد (لیست لیست‌ها)
         ohlcv = []
         if data and 't' in data:
             for i in range(len(data['t'])):
                 ohlcv.append([
-                    data['t'][i] * 1000,
+                    data['t'][i],  # تایم‌استمپ
                     float(data['o'][i]),
                     float(data['h'][i]),
                     float(data['l'][i]),
@@ -145,6 +169,24 @@ class TrueTradeExchange:
             'status': 'closed' if result.get('positionId') else 'open'
         }
 
+    def fetch_balance(self):
+        """دریافت موجودی کیف پول"""
+        try:
+            uri = "/accounting/assets"
+            data = self._request('GET', uri)
+            if isinstance(data, list):
+                for asset in data:
+                    if asset.get('asset') == 'USDT' and asset.get('accountType') == 'futures':
+                        return {
+                            'total': float(asset.get('balance', 0)),
+                            'locked': float(asset.get('lockedBalance', 0)),
+                            'available': float(asset.get('balance', 0)) - float(asset.get('lockedBalance', 0))
+                        }
+            return {'total': 0, 'locked': 0, 'available': 0}
+        except Exception as e:
+            print(f"[BALANCE ERROR] {e}")
+            return None
+
 # =====================================================================================
 # توابع ارسال پیام به تلگرام
 # =====================================================================================
@@ -171,6 +213,19 @@ def format_iran_time(dt=None):
     if dt is None:
         dt = get_iran_time()
     return dt.strftime('%Y-%m-%d %H:%M:%S')
+
+def get_meal_emoji():
+    """دریافت شکلک مناسب بر اساس زمان فعلی"""
+    now = get_iran_time()
+    hour = now.hour
+    if 5 <= hour < 10:
+        return "🌅", "صبحانه"
+    elif 10 <= hour < 16:
+        return "🌞", "نهار"
+    elif 16 <= hour < 22:
+        return "🌆", "شام"
+    else:
+        return "🌙", "شب"
 
 # =====================================================================================
 # کلاس Config
@@ -301,6 +356,7 @@ class SymbolState:
         self.pl_hist_2 = self.pl_hist_1 = None
 
         self.open_positions = []
+        self.closed_positions = []  # برای ذخیره تاریخچه معاملات بسته شده
 
 def compute_stop_and_targets(state: SymbolState, direction: str, df: pd.DataFrame, atr_val: float, cfg: Config):
     if direction == "long":
@@ -352,6 +408,8 @@ def create_exchange():
 
 def fetch_ohlcv_df(exchange, symbol: str, timeframe: str, limit: int) -> pd.DataFrame:
     raw = exchange.fetch_ohlcv(symbol, timeframe, limit)
+    if not raw:
+        return pd.DataFrame()
     df = pd.DataFrame(raw, columns=["timestamp", "open", "high", "low", "close", "volume"])
     df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")
     return df
@@ -383,49 +441,92 @@ def place_market_order_with_sl_tp(exchange, symbol: str, direction: str,
     return {"entry": entry_order, "stop": None, "tp": None}
 
 # =====================================================================================
-# تابع ارسال گزارش دوره‌ای
+# تابع ارسال گزارش کامل (وعده‌های غذایی)
 # =====================================================================================
-def send_periodic_report(exchange, states, cfg):
-    """ارسال گزارش هر ۱۲ ساعت به تلگرام"""
+def send_full_report(exchange, states, cfg):
+    """ارسال گزارش کامل با وضعیت اتصال، داده، معاملات و موجودی"""
     try:
-        # دریافت اطلاعات حساب
-        positions = exchange.fetch_positions()
-        total_pnl = 0
-        open_trades = 0
-        
-        for pos in positions:
-            open_trades += 1
-            total_pnl += float(pos.get('unrealizedPnL', 0))
-        
-        # ساخت پیام
+        meal_emoji, meal_name = get_meal_emoji()
         iran_time = format_iran_time()
-        message = f"📊 **گزارش دوره‌ای (هر ۱۲ ساعت)**\n"
-        message += f"🕒 **زمان ایران:** {iran_time}\n"
-        message += f"━━━━━━━━━━━━━━━━━\n"
-        message += f"📈 **تعداد معاملات باز:** {open_trades}\n"
-        message += f"💰 **سود/ضرر تحقق‌نیافته:** {total_pnl:.2f} USDT\n"
-        message += f"━━━━━━━━━━━━━━━━━\n"
-        message += f"📋 **جزئیات هر نماد:**\n"
         
-        for symbol in cfg.SYMBOLS:
-            symbol_positions = [p for p in positions if p.get('symbol') == symbol.replace('/', '')]
-            if symbol_positions:
-                for pos in symbol_positions:
-                    pnl = float(pos.get('unrealizedPnL', 0))
-                    side = pos.get('side', 'UNKNOWN')
-                    entry = float(pos.get('entryPrice', 0))
-                    mark = float(pos.get('markPrice', 0))
-                    message += f"\n🔹 **{symbol}**\n"
-                    message += f"   جهت: {side}\n"
-                    message += f"   قیمت ورود: {entry:.4f}\n"
-                    message += f"   قیمت فعلی: {mark:.4f}\n"
-                    message += f"   سود/ضرر: {pnl:.2f} USDT\n"
-            else:
-                message += f"\n🔹 **{symbol}**: بدون معامله باز\n"
+        # 1. بررسی اتصال به صرافی
+        connection_status = "✅ متصل"
+        try:
+            exchange.fetch_positions()
+        except:
+            connection_status = "❌ قطع"
+        
+        # 2. بررسی دریافت داده
+        data_status = "❌ داده دریافت نشد"
+        try:
+            # تست دریافت داده برای اولین نماد
+            test_data = fetch_ohlcv_df(exchange, cfg.SYMBOLS[0], cfg.TIMEFRAME, 10)
+            if not test_data.empty:
+                data_status = "✅ داده دریافت شد"
+        except:
+            data_status = "❌ خطا در دریافت داده"
+        
+        # 3. اطلاعات معاملات
+        positions = exchange.fetch_positions()
+        open_trades = len(positions)
+        
+        # محاسبه تعداد استاپ‌ها و تارگت‌ها (از تاریخچه)
+        total_stops = 0
+        total_targets = 0
+        total_stop_loss = 0.0
+        total_profit = 0.0
+        
+        # محاسبه سود/ضرر کل از پوزیشن‌های باز
+        total_unrealized_pnl = 0.0
+        for pos in positions:
+            total_unrealized_pnl += float(pos.get('unrealizedPnL', 0))
+        
+        # 4. موجودی کیف پول
+        balance = exchange.fetch_balance()
+        if balance:
+            total_balance = balance['total']
+            available_balance = balance['available']
+        else:
+            total_balance = 0.0
+            available_balance = 0.0
+        
+        # 5. ساخت پیام جذاب
+        message = f"{meal_emoji} **گزارش {meal_name} - ربات DTM** {meal_emoji}\n"
+        message += f"🕒 **زمان ایران:** {iran_time}\n"
+        message += f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        
+        # وضعیت اتصال و داده
+        message += f"📡 **وضعیت اتصال به صرافی:** {connection_status}\n"
+        message += f"📊 **دریافت داده برای تحلیل:** {data_status}\n\n"
+        
+        # وضعیت معاملات
+        if open_trades > 0:
+            message += f"📈 **معاملات باز:** {open_trades} عدد\n"
+            for pos in positions:
+                symbol = pos.get('symbol', 'N/A')
+                side = pos.get('side', 'N/A')
+                entry = float(pos.get('entryPrice', 0))
+                mark = float(pos.get('markPrice', 0))
+                pnl = float(pos.get('unrealizedPnL', 0))
+                pnl_emoji = "🟢" if pnl >= 0 else "🔴"
+                message += f"   • {symbol} {side} | ورود: {entry:.4f} | فعلی: {mark:.4f} | {pnl_emoji} سود/ضرر: {pnl:.2f} USDT\n"
+        else:
+            message += f"📭 **هیچ معامله‌ای باز نیست.**\n"
+        
+        message += f"\n💰 **سود/ضرر تحقق‌نیافته کل:** {total_unrealized_pnl:.2f} USDT\n"
+        message += f"🏦 **موجودی کیف پول (USDT):** {total_balance:.2f}\n"
+        message += f"   • موجودی قابل استفاده: {available_balance:.2f}\n"
+        
+        # اگر تاریخچه استاپ و تارگت وجود دارد
+        if hasattr(states, 'closed_positions') and states.closed_positions:
+            message += f"\n📜 **تاریخچه معاملات بسته شده:**\n"
+            for i, trade in enumerate(states.closed_positions[-5:], 1):
+                close_type = "🔴 استاپ" if trade.get('closed_by') == 'stop' else "🟢 تارگت"
+                message += f"   {i}. {trade['symbol']} {close_type} | سود/ضرر: {trade['pnl']:.2f} USDT\n"
         
         # ارسال به تلگرام
         send_telegram_message(message)
-        print(f"[REPORT] گزارش دوره‌ای ارسال شد - {iran_time}")
+        print(f"[REPORT] گزارش {meal_name} ارسال شد - {iran_time}")
         
     except Exception as e:
         print(f"[REPORT ERROR] {e}")
@@ -436,6 +537,11 @@ def send_periodic_report(exchange, states, cfg):
 # =====================================================================================
 def process_symbol(exchange, symbol: str, state: SymbolState, cfg: Config):
     df = fetch_ohlcv_df(exchange, symbol, cfg.TIMEFRAME, cfg.CANDLE_LIMIT)
+    # اگر داده‌ای وجود نداشت، از تابع خارج شو
+    if df.empty:
+        print(f"[SKIP] {symbol}: داده‌ای برای تحلیل وجود ندارد")
+        return
+        
     closed_df = df.iloc[:-1].reset_index(drop=True)
     n = len(closed_df)
     if n < cfg.LEFT_BARS + cfg.RIGHT_BARS + cfg.TREND_LOOKBACK + 5:
@@ -574,10 +680,22 @@ def _execute_entry(exchange, symbol, direction, entry_price, stop_price, target_
 def sync_closed_positions(exchange, symbol: str, state: SymbolState):
     try:
         positions = exchange.fetch_positions()
-        live_contracts = sum(abs(float(p.get('contracts', 0) or 0)) for p in positions if p.get('symbol') == symbol)
-        if live_contracts == 0 and state.open_positions:
-            print(f"[SYNC] {symbol}: تمام پوزیشن‌ها روی صرافی بسته شده‌اند - پاک‌سازی state محلی")
-            state.open_positions.clear()
+        live_symbols = [p.get('symbol') for p in positions]
+        
+        # بررسی پوزیشن‌هایی که بسته شده‌اند
+        for pos in state.open_positions[:]:
+            if pos.get('symbol') not in live_symbols:
+                # این پوزیشن بسته شده است
+                state.open_positions.remove(pos)
+                # می‌توانید تاریخچه را ذخیره کنید
+                if not hasattr(state, 'closed_positions'):
+                    state.closed_positions = []
+                state.closed_positions.append({
+                    'symbol': symbol,
+                    'closed_by': 'unknown',
+                    'pnl': 0  # در صورت امکان از صرافی دریافت کنید
+                })
+        
     except Exception as e:
         print(f"[SYNC ERROR] {symbol}: {e}")
 
@@ -600,8 +718,8 @@ def trading_loop():
     consecutive_failures = 0
     max_backoff_seconds = 300
     
-    # متغیر برای گزارش دوره‌ای
-    last_report_time = get_iran_time()
+    # متغیر برای گزارش‌های وعده‌های غذایی
+    last_meal_report = None
 
     while True:
         try:
@@ -621,11 +739,25 @@ def trading_loop():
                     print(f"[SYMBOL PROCESSING ERROR] {symbol}: {e}")
                     traceback.print_exc()
             
-            # بررسی ارسال گزارش دوره‌ای (هر ۱۲ ساعت)
+            # بررسی ارسال گزارش وعده‌های غذایی
             now = get_iran_time()
-            if (now - last_report_time).total_seconds() >= 12 * 3600:
-                send_periodic_report(exchange, states, cfg)
-                last_report_time = now
+            current_hour = now.hour
+            
+            # وعده‌های غذایی: صبح (6-9)، نهار (12-14)، شام (19-21)
+            meal_time = None
+            if 6 <= current_hour <= 9:
+                meal_time = "صبحانه"
+            elif 12 <= current_hour <= 14:
+                meal_time = "نهار"
+            elif 19 <= current_hour <= 21:
+                meal_time = "شام"
+            
+            if meal_time:
+                # اگر گزارشی برای این وعده ارسال نشده باشد
+                if last_meal_report != meal_time or (now - last_meal_report_time).total_seconds() > 3600:
+                    send_full_report(exchange, states, cfg)
+                    last_meal_report = meal_time
+                    last_meal_report_time = now
 
             time.sleep(cfg.POLL_INTERVAL_SECONDS)
 
@@ -644,6 +776,10 @@ def trading_loop():
             time.sleep(backoff)
 
 if __name__ == "__main__":
+    # متغیرهای سراسری برای گزارش‌های وعده‌های غذایی
+    global last_meal_report_time
+    last_meal_report_time = get_iran_time()
+    
     flask_thread = threading.Thread(target=run_flask, daemon=True)
     flask_thread.start()
     print("[STARTUP] وب‌سرور Flask روی پورت 10000 راه‌اندازی شد.")
