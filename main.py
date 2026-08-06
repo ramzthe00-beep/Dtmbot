@@ -57,7 +57,7 @@ class TrueTradeExchange:
         return signature
 
     def _request(self, method, uri, data=None):
-        """ارسال درخواست به API با امضا و چاپ خطای کامل"""
+        """ارسال درخواست به API با امضا و چاپ خطا در کنسول (بدون ارسال به تلگرام)"""
         timestamp = str(int(time.time() * 1000))
         signature = self._sign_request(method, uri, timestamp)
 
@@ -71,15 +71,10 @@ class TrueTradeExchange:
         url = f"{self.base_url}{uri}"
         response = self.session.request(method, url, headers=headers, json=data, timeout=15)
         
-        # چاپ متن کامل پاسخ صرافی در صورت بروز خطا
+        # چاپ خطا در کنسول بدون ارسال به تلگرام
         if not response.ok:
             error_msg = f"\n[EXCHANGE ERROR RESPONSE] Status: {response.status_code}\nBody: {response.text}\nUsed URI: {uri}\nUsed Timestamp: {timestamp}\n"
             print(error_msg)
-            # ارسال خطا به تلگرام
-            try:
-                send_telegram_message(f"⚠️ **خطای صرافی:**\n`{error_msg}`")
-            except:
-                pass
             
         response.raise_for_status()
         return response.json()
@@ -129,7 +124,7 @@ class TrueTradeExchange:
         return ohlcv
 
     def fetch_positions(self, symbols=None):
-        """دریافت پوزیشن‌های باز"""
+        """دریافت پوزیشن‌های باز (خطاها فقط در کنسول چاپ می‌شوند)"""
         uri = "/futures/positions"
         try:
             data = self._request('GET', uri)
@@ -149,12 +144,7 @@ class TrueTradeExchange:
             return positions
         except requests.exceptions.HTTPError as e:
             error_body = e.response.text if e.response else "No body"
-            error_msg = f"[POSITIONS HTTP ERROR] Status: {e.response.status_code} | Response: {error_body}"
-            print(error_msg)
-            try:
-                send_telegram_message(f"⚠️ **خطای دریافت پوزیشن‌ها:**\n`{error_msg}`")
-            except:
-                pass
+            print(f"[POSITIONS HTTP ERROR] Status: {e.response.status_code} | Response: {error_body}")
             return []
         except Exception as e:
             print(f"[POSITIONS ERROR] {e}")
