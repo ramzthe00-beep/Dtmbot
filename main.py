@@ -66,13 +66,15 @@ class TrueTradeExchange:
         url = f"{self.base_url}{uri}"
         response = self.session.request(method, url, headers=headers, json=data, timeout=15)
         
-        # چاپ متن کامل خطا برای عیب‌یابی دقیق
+        # چاپ متن کامل پاسخ صرافی در صورت بروز خطا
         if not response.ok:
-            print(f"=== API ERROR ===")
-            print(f"Status Code: {response.status_code}")
-            print(f"Response Body: {response.text}")
-            print(f"Signature Payload used: {timestamp}{method.upper()}{uri}")
-            print(f"==================")
+            error_msg = f"\n[EXCHANGE ERROR RESPONSE] Status: {response.status_code}\nBody: {response.text}\nUsed URI: {uri}\nUsed Timestamp: {timestamp}\n"
+            print(error_msg)
+            # ارسال خطا به تلگرام
+            try:
+                send_telegram_message(f"⚠️ **خطای صرافی:**\n`{error_msg}`")
+            except:
+                pass
             
         response.raise_for_status()
         return response.json()
@@ -140,6 +142,17 @@ class TrueTradeExchange:
                             'unrealizedPnL': float(pos.get('unrealizedPnL', 0))
                         })
             return positions
+        except requests.exceptions.HTTPError as e:
+            # چاپ متن پاسخ صرافی از داخل استثناء
+            error_body = e.response.text if e.response else "No body"
+            error_msg = f"[POSITIONS HTTP ERROR] Status: {e.response.status_code} | Response: {error_body}"
+            print(error_msg)
+            # ارسال خطا به تلگرام
+            try:
+                send_telegram_message(f"⚠️ **خطای دریافت پوزیشن‌ها:**\n`{error_msg}`")
+            except:
+                pass
+            return []
         except Exception as e:
             print(f"[POSITIONS ERROR] {e}")
             return []
