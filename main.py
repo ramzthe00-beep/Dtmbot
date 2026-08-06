@@ -71,7 +71,8 @@ class TrueTradeExchange:
 
     def fetch_ohlcv(self, symbol, timeframe='1m', limit=500):
         """دریافت داده‌های تاریخچه قیمت با فرمت صحیح (UDF)"""
-        symbol_clean = symbol.replace('/', '').upper()
+        # نماد بدون اسلش و با حروف بزرگ
+        symbol_clean = symbol.upper()
         
         # تنظیم resolution بر اساس تایم‌فریم (طبق استاندارد UDF)
         resolution_map = {
@@ -142,7 +143,7 @@ class TrueTradeExchange:
 
     def create_order(self, symbol, order_type, side, amount, price=None, params=None):
         """ایجاد سفارش جدید"""
-        symbol_clean = symbol.replace('/', '').upper()
+        symbol_clean = symbol.upper()
         side_upper = side.upper()
         trade_type = order_type.upper()
         
@@ -260,7 +261,7 @@ class Config:
     TIMEFRAME = "1m"
     CANDLE_LIMIT = 500
     POLL_INTERVAL_SECONDS = 15
-    SYMBOLS = ["LTC/USDT", "DOGE/USDT", "ETH/USDT"]
+    SYMBOLS = ["LTCUSDT", "DOGEUSDT", "ETHUSDT"]  # ✅ بدون اسلش
 
 # =====================================================================================
 # توابع محاسباتی استراتژی
@@ -667,12 +668,12 @@ def _execute_entry(exchange, symbol, direction, entry_price, stop_price, target_
 def sync_closed_positions(exchange, symbol: str, state: SymbolState):
     try:
         positions = exchange.fetch_positions()
-        live_symbols = [str(p.get('symbol', '')).replace('/', '').upper() for p in positions]
+        live_symbols = [str(p.get('symbol', '')).upper() for p in positions]
         
-        symbol_clean = symbol.replace('/', '').upper()
+        symbol_clean = symbol.upper()
         
         for pos in state.open_positions[:]:
-            pos_sym = str(pos.get('symbol', symbol)).replace('/', '').upper()
+            pos_sym = str(pos.get('symbol', symbol)).upper()
             if pos_sym == symbol_clean and pos_sym not in live_symbols:
                 state.open_positions.remove(pos)
                 if not hasattr(state, 'closed_positions'):
@@ -769,4 +770,3 @@ if __name__ == "__main__":
     
     print("[STARTUP] شروع حلقه معاملاتی اصلی...")
     trading_loop()
-
