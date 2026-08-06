@@ -60,6 +60,7 @@ class TrueTradeExchange:
             "X-API-Key": self.api_key,
             "X-Timestamp": timestamp,
             "X-Signature": signature,
+            "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json"
         }
 
@@ -69,43 +70,57 @@ class TrueTradeExchange:
         return response.json()
 
     def fetch_ohlcv(self, symbol, timeframe='1m', limit=500):
-        """دریافت داده‌های تاریخچه قیمت با فرمت صحیح (اصلاح شده)"""
+        """دریافت داده‌های تاریخچه قیمت با فرمت صحیح (UDF)"""
         import time
         symbol_clean = symbol.replace('/', '')
         
-        # ✅ اصلاح ۱: استفاده از ثانیه برای resolution
-        resolution = "60"  # مقدار پیش‌فرض برای ۱ دقیقه
+        # تنظیم resolution بر اساس تایم‌فریم (طبق استاندارد UDF)
+        resolution = "1"  # مقدار پیش‌فرض برای ۱ دقیقه
         if timeframe == "1m":
-            resolution = "60"
+            resolution = "1"
         elif timeframe == "5m":
-            resolution = "300"
+            resolution = "5"
         elif timeframe == "15m":
-            resolution = "900"
+            resolution = "15"
+        elif timeframe == "30m":
+            resolution = "30"
         elif timeframe == "1h":
-            resolution = "3600"
+            resolution = "60"
+        elif timeframe == "4h":
+            resolution = "240"
+        elif timeframe == "1d":
+            resolution = "D"
+        elif timeframe == "1w":
+            resolution = "W"
+        elif timeframe == "1M":
+            resolution = "M"
+        else:
+            # اگر تایم‌فریم نامشخص بود، از ۱ دقیقه استفاده کن
+            resolution = "1"
         
-        # ✅ اصلاح ۲: حذف limit و استفاده از from و to (به میلی‌ثانیه)
-        to_timestamp = int(time.time() * 1000)
-        from_timestamp = to_timestamp - (limit * 60 * 1000)
+        # تایم‌استمپ به ثانیه (طبق استاندارد UDF)
+        to_timestamp = int(time.time())
+        from_timestamp = to_timestamp - (limit * 60)  # limit دقیقه قبل
         
-        # ✅ اصلاح ۳: ساخت آدرس بدون پارامتر limit
-        uri = f"/futures/udf/history?symbol={symbol_clean}&resolution={resolution}&from={from_timestamp}&to={to_timestamp}"
+        # ساخت آدرس با فرمت صحیح (استفاده از countback به جای limit)
+        uri = f"/futures/udf/history?symbol={symbol_clean}&resolution={resolution}&from={from_timestamp}&to={to_timestamp}&countback={limit}"
         
         try:
             data = self._request('GET', uri)
         except requests.exceptions.HTTPError as e:
-            # چاپ خطای کامل برای دیباگ
             print(f"[OHLCV ERROR] {symbol}: {e.response.status_code} - {e.response.text}")
             return []
         
-        if not data or data.get('s') == 'no_data':
+        # بررسی پاسخ
+        if not data or data.get('s') != 'ok':
             return []
         
+        # تبدیل به فرمت استاندارد (لیست لیست‌ها) با تایم‌استمپ میلی‌ثانیه
         ohlcv = []
         if data and 't' in data:
             for i in range(len(data['t'])):
                 ohlcv.append([
-                    data['t'][i],
+                    data['t'][i] * 1000,  # تبدیل به میلی‌ثانیه برای هماهنگی با کد
                     float(data['o'][i]),
                     float(data['h'][i]),
                     float(data['l'][i]),
@@ -117,20 +132,25 @@ class TrueTradeExchange:
     def fetch_positions(self, symbols=None):
         """دریافت پوزیشن‌های باز"""
         uri = "/futures/positions"
-        data = self._request('GET', uri)
-        positions = []
-        if isinstance(data, list):
-            for pos in data:
-                if pos.get('status') == 'OPEN':
-                    positions.append({
-                        'symbol': pos['symbol'],
-                        'side': pos['side'].lower(),
-                        'contracts': float(pos['size']),
-                        'entryPrice': float(pos.get('entryPrice', 0)),
-                        'markPrice': float(pos.get('markPrice', 0)),
-                        'leverage': int(pos.get('leverage', 1))
-                    })
-        return positions
+        try:
+            data = self._request('GET', uri)
+            positions = []
+            if isinstance(data, list):
+                for pos in data:
+                    if pos.get('status') == 'OPEN':
+                        positions.append({
+                            'symbol': pos['symbol'],
+                            'side': pos['side'].lower(),
+                            'contracts': float(pos['size']),
+                            'entryPrice': float(pos.get('entryPrice', 0)),
+                            'markPrice': float(pos.get('markPrice', 0)),
+                            'leverage': int(pos.get('leverage', 1)),
+                            'unrealizedPnL': float(pos.get('unrealizedPnL', 0))
+                        })
+            return positions
+        except Exception as e:
+            print(f"[POSITIONS ERROR] {e}")
+            return []
 
     def create_order(self, symbol, order_type, side, amount, price=None, params=None):
         """ایجاد سفارش جدید"""
@@ -249,7 +269,7 @@ class Config:
     MAX_LOSS_USD = 3.5
     MIN_RR_RATIO = 2.0
     PYRAMIDING_MAX = 5
-    TIMEFRAME = "1m"
+    TIMEFRAME = "1m"  # ✅ تایم‌فریم ۱ دقیقه
     CANDLE_LIMIT = 500
     POLL_INTERVAL_SECONDS = 15
     SYMBOLS = ["LTC/USDT", "DOGE/USDT", "ETH/USDT"]
