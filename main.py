@@ -19,17 +19,17 @@ from datetime import datetime, timezone, timedelta
 from flask import Flask
 
 # =====================================================================================
-# کلیدهای API
+# کلیدهای API (بهتر است از متغیرهای محیطی خوانده شوند)
 # =====================================================================================
-API_KEY = "J_MHEOhlJ3xSL8SQGWsyNz8xrGSxk0wQvA8WmXSX"
-API_SECRET = "3a0f92c090ba32cfb0be29542c0ed5bb01fd35452cd191fd7e86817e82cd38cd"
+API_KEY = os.getenv("API_KEY", "J_MHEOhlJ3xSL8SQGWsyNz8xrGSxk0wQvA8WmXSX")
+API_SECRET = os.getenv("API_SECRET", "3a0f92c090ba32cfb0be29542c0ed5bb01fd35452cd191fd7e86817e82cd38cd")
 BASE_URL = "https://apiv2.thetruetrade.io"
 
 # =====================================================================================
-# تنظیمات تلگرام
+# تنظیمات تلگرام (بهتر است از متغیرهای محیطی خوانده شوند)
 # =====================================================================================
-TELEGRAM_BOT_TOKEN = "8514469828:AAFC76EiVA7I4TFiX08jJ5N6-eKtOLMKitE"
-TELEGRAM_CHAT_ID = "7402770612"
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "8514469828:AAFC76EiVA7I4TFiX08jJ5N6-eKtOLMKitE")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "7402770612")
 
 # =====================================================================================
 # کلاس صرافی سفارشی برای TheTrueTrade
@@ -42,7 +42,7 @@ class TrueTradeExchange:
         self.session = requests.Session()
 
     def _sign_request(self, method, uri, timestamp):
-        """ایجاد امضای HMAC-SHA256 برای درخواست"""
+        """ایجاد امضای HMAC-SHA256 برای درخواست بر اساس مستندات"""
         payload = f"{timestamp}{method.upper()}{uri}"
         signature = hmac.new(
             self.api_secret.encode('utf-8'),
@@ -52,7 +52,7 @@ class TrueTradeExchange:
         return signature
 
     def _request(self, method, uri, data=None):
-        """ارسال درخواست به API با امضا"""
+        """ارسال درخواست به API با امضا - فقط از سه هدر اصلی استفاده می‌شود"""
         timestamp = str(int(time.time() * 1000))
         signature = self._sign_request(method, uri, timestamp)
 
@@ -60,7 +60,6 @@ class TrueTradeExchange:
             "X-API-Key": self.api_key,
             "X-Timestamp": timestamp,
             "X-Signature": signature,
-            "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json"
         }
 
@@ -71,10 +70,8 @@ class TrueTradeExchange:
 
     def fetch_ohlcv(self, symbol, timeframe='1m', limit=500):
         """دریافت داده‌های تاریخچه قیمت با فرمت صحیح (UDF)"""
-        # نماد بدون اسلش و با حروف بزرگ
         symbol_clean = symbol.upper()
         
-        # تنظیم resolution بر اساس تایم‌فریم (طبق استاندارد UDF)
         resolution_map = {
             "1m": "1",
             "5m": "5",
@@ -88,7 +85,6 @@ class TrueTradeExchange:
         }
         resolution = resolution_map.get(timeframe, "1")
         
-        # تایم‌استمپ به ثانیه (طبق استاندارد UDF)
         to_timestamp = int(time.time())
         from_timestamp = to_timestamp - (limit * 60)
         
@@ -100,11 +96,9 @@ class TrueTradeExchange:
             print(f"[OHLCV ERROR] {symbol}: {e.response.status_code} - {e.response.text}")
             return []
         
-        # بررسی پاسخ
         if not data or data.get('s') != 'ok':
             return []
         
-        # تبدیل به فرمت استاندارد با تایم‌استمپ میلی‌ثانیه
         ohlcv = []
         if data and 't' in data:
             for i in range(len(data['t'])):
@@ -261,10 +255,10 @@ class Config:
     TIMEFRAME = "1m"
     CANDLE_LIMIT = 500
     POLL_INTERVAL_SECONDS = 15
-    SYMBOLS = ["LTCUSDT", "DOGEUSDT", "ETHUSDT"]  # ✅ بدون اسلش
+    SYMBOLS = ["LTCUSDT", "DOGEUSDT", "ETHUSDT"]
 
 # =====================================================================================
-# توابع محاسباتی استراتژی
+# توابع محاسباتی استراتژی (تغییر نکرده)
 # =====================================================================================
 def calc_rsi(close: pd.Series, length: int) -> pd.Series:
     delta = close.diff()
