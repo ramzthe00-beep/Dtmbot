@@ -42,8 +42,13 @@ class TrueTradeExchange:
         self.session = requests.Session()
 
     def _sign_request(self, method, uri, timestamp):
-        """ایجاد امضای HMAC-SHA256 برای درخواست بر اساس مستندات"""
-        payload = f"{timestamp}{method.upper()}{uri}"
+        """
+        ایجاد امضای HMAC-SHA256 برای درخواست بر اساس مستندات.
+        ⚠️ نکته مهم: کوئری استرینگ (Query Parameters) نباید در امضا لحاظ شوند.
+        """
+        # حذف کوئری استرینگ از URI برای امضا
+        path_only = uri.split('?')[0]
+        payload = f"{timestamp}{method.upper()}{path_only}"
         signature = hmac.new(
             self.api_secret.encode('utf-8'),
             payload.encode('utf-8'),
@@ -143,11 +148,9 @@ class TrueTradeExchange:
                         })
             return positions
         except requests.exceptions.HTTPError as e:
-            # چاپ متن پاسخ صرافی از داخل استثناء
             error_body = e.response.text if e.response else "No body"
             error_msg = f"[POSITIONS HTTP ERROR] Status: {e.response.status_code} | Response: {error_body}"
             print(error_msg)
-            # ارسال خطا به تلگرام
             try:
                 send_telegram_message(f"⚠️ **خطای دریافت پوزیشن‌ها:**\n`{error_msg}`")
             except:
