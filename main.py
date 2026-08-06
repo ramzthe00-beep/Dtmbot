@@ -659,7 +659,8 @@ def _execute_entry(exchange, symbol, direction, entry_price, stop_price, target_
         qty, leverage = compute_qty_and_leverage(exchange, symbol, entry_price, stop_price, cfg)
         if qty is None or qty <= 0:
             print(f"[SKIP] {symbol} {direction}: محاسبه حجم نامعتبر بود")
-            return        result = place_market_order_with_sl_tp(exchange, symbol, direction, qty, leverage, stop_price, target_price)
+            result = place_market_order_with_sl_tp(exchange, symbol, direction, qty, leverage, stop_price, target_price)
+            
 
         state.open_positions.append({
             "symbol": symbol,
