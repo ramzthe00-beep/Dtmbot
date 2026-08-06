@@ -21,8 +21,8 @@ from flask import Flask
 # =====================================================================================
 # کلیدهای API (بهتر است از متغیرهای محیطی خوانده شوند)
 # =====================================================================================
-API_KEY = os.getenv("API_KEY", "J_MHEOhlJ3xSL8SQGWsyNz8xrGSxk0wQvA8WmXSX")
-API_SECRET = os.getenv("API_SECRET", "3a0f92c090ba32cfb0be29542c0ed5bb01fd35452cd191fd7e86817e82cd38cd")
+API_KEY = os.getenv("API_KEY", "pXJ3uOI3y7iPHxIgefQJ30PikXHqbQyVV9Ouj-_K")
+API_SECRET = os.getenv("API_SECRET", "4cd23e00385ea761250034b420c86f40c4edb8e27c285c21572dbadf7e927b09")
 BASE_URL = "https://apiv2.thetruetrade.io"
 
 # =====================================================================================
