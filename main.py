@@ -52,7 +52,7 @@ class TrueTradeExchange:
         return signature
 
     def _request(self, method, uri, data=None):
-        """ارسال درخواست به API با امضا و نمایش خطای کامل در صورت بروز مشکل"""
+        """ارسال درخواست به API با امضا و چاپ خطای کامل"""
         timestamp = str(int(time.time() * 1000))
         signature = self._sign_request(method, uri, timestamp)
 
@@ -64,19 +64,18 @@ class TrueTradeExchange:
         }
 
         url = f"{self.base_url}{uri}"
+        response = self.session.request(method, url, headers=headers, json=data, timeout=15)
         
-        try:
-            response = self.session.request(method, url, headers=headers, json=data, timeout=15)
-            response.raise_for_status()
-            return response.json()
-        except requests.exceptions.HTTPError as e:
-            # چاپ خطای کامل برای دیباگ
-            print(f"[API ERROR] {method} {uri} -> Status: {response.status_code}")
+        # چاپ متن کامل خطا برای عیب‌یابی دقیق
+        if not response.ok:
+            print(f"=== API ERROR ===")
+            print(f"Status Code: {response.status_code}")
             print(f"Response Body: {response.text}")
-            raise
-        except requests.exceptions.RequestException as e:
-            print(f"[REQUEST ERROR] {method} {uri} -> {e}")
-            raise
+            print(f"Signature Payload used: {timestamp}{method.upper()}{uri}")
+            print(f"==================")
+            
+        response.raise_for_status()
+        return response.json()
 
     def fetch_ohlcv(self, symbol, timeframe='1m', limit=500):
         """دریافت داده‌های تاریخچه قیمت با فرمت صحیح (UDF)"""
