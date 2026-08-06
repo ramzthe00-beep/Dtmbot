@@ -56,26 +56,33 @@ class TrueTradeExchange:
         ).hexdigest()
         return signature
 
-    def _request(self, method, uri, data=None):
-        """ارسال درخواست به API با امضا و چاپ خطای کامل"""
-        timestamp = str(int(time.time() * 1000))
-        signature = self._sign_request(method, uri, timestamp)
-
+    def _request(self, method, uri, data=None, signed=True):
+        """
+        ارسال درخواست به API با قابلیت تفکیک درخواست‌های عمومی و خصوصی.
+        - signed=True: درخواست با امضا و احراز هویت (برای endpointهای خصوصی)
+        - signed=False: درخواست بدون امضا (برای endpointهای عمومی)
+        """
         headers = {
-            "X-API-Key": self.api_key,
-            "X-Timestamp": timestamp,
-            "X-Signature": signature,
-            "Content-Type": "application/json"
+            "Content-Type": "application/json",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
         }
+
+        # اگر درخواست نیاز به امضا و احراز هویت داشته باشد
+        if signed:
+            timestamp = str(int(time.time() * 1000))
+            signature = self._sign_request(method, uri, timestamp)
+            headers.update({
+                "X-API-Key": self.api_key,
+                "X-Timestamp": timestamp,
+                "X-Signature": signature
+            })
 
         url = f"{self.base_url}{uri}"
         response = self.session.request(method, url, headers=headers, json=data, timeout=15)
         
-        # چاپ متن کامل پاسخ صرافی در صورت بروز خطا
         if not response.ok:
-            error_msg = f"\n[EXCHANGE ERROR RESPONSE] Status: {response.status_code}\nBody: {response.text}\nUsed URI: {uri}\nUsed Timestamp: {timestamp}\n"
+            error_msg = f"\n[EXCHANGE ERROR RESPONSE] Status: {response.status_code}\nBody: {response.text}\nUsed URI: {uri}\n"
             print(error_msg)
-            # ارسال خطا به تلگرام
             try:
                 send_telegram_message(f"⚠️ **خطای صرافی:**\n`{error_msg}`")
             except:
@@ -85,7 +92,7 @@ class TrueTradeExchange:
         return response.json()
 
     def fetch_ohlcv(self, symbol, timeframe='1m', limit=500):
-        """دریافت داده‌های تاریخچه قیمت با فرمت صحیح (UDF)"""
+        """دریافت داده‌های تاریخچه قیمت بدون نیاز به امضا (اندپوینت عمومی)"""
         symbol_clean = symbol.upper()
         
         resolution_map = {
@@ -107,7 +114,8 @@ class TrueTradeExchange:
         uri = f"/futures/udf/history?symbol={symbol_clean}&resolution={resolution}&from={from_timestamp}&to={to_timestamp}&countback={limit}"
         
         try:
-            data = self._request('GET', uri)
+            # پارامتر signed=False ارسال می‌شود چون این متد عمومی است
+            data = self._request('GET', uri, signed=False)
         except requests.exceptions.HTTPError as e:
             print(f"[OHLCV ERROR] {symbol}: {e.response.status_code} - {e.response.text}")
             return []
@@ -129,9 +137,10 @@ class TrueTradeExchange:
         return ohlcv
 
     def fetch_positions(self, symbols=None):
-        """دریافت پوزیشن‌های باز"""
+        """دریافت پوزیشن‌های باز (نیازمند امضا)"""
         uri = "/futures/positions"
         try:
+            # signed=True به صورت پیش‌فرض ارسال می‌شود
             data = self._request('GET', uri)
             positions = []
             if isinstance(data, list):
@@ -161,7 +170,7 @@ class TrueTradeExchange:
             return []
 
     def create_order(self, symbol, order_type, side, amount, price=None, params=None):
-        """ایجاد سفارش جدید"""
+        """ایجاد سفارش جدید (نیازمند امضا)"""
         symbol_clean = symbol.upper()
         side_upper = side.upper()
         trade_type = order_type.upper()
@@ -188,7 +197,7 @@ class TrueTradeExchange:
                 order_data["takeProfit"] = str(params['takeProfit'])
         
         uri = "/futures/positions"
-        result = self._request('POST', uri, order_data)
+        result = self._request('POST', uri, order_data)  # signed=True پیش‌فرض
         
         return {
             'id': result.get('positionId'),
@@ -201,10 +210,10 @@ class TrueTradeExchange:
         }
 
     def fetch_balance(self):
-        """دریافت موجودی کیف پول"""
+        """دریافت موجودی کیف پول (نیازمند امضا)"""
         try:
             uri = "/accounting/assets"
-            data = self._request('GET', uri)
+            data = self._request('GET', uri)  # signed=True پیش‌فرض
             if isinstance(data, list):
                 for asset in data:
                     if asset.get('asset') == 'USDT' and asset.get('accountType') == 'futures':
@@ -650,9 +659,7 @@ def _execute_entry(exchange, symbol, direction, entry_price, stop_price, target_
         qty, leverage = compute_qty_and_leverage(exchange, symbol, entry_price, stop_price, cfg)
         if qty is None or qty <= 0:
             print(f"[SKIP] {symbol} {direction}: محاسبه حجم نامعتبر بود")
-            return
-
-        result = place_market_order_with_sl_tp(exchange, symbol, direction, qty, leverage, stop_price, target_price)
+            return        result = place_market_order_with_sl_tp(exchange, symbol, direction, qty, leverage, stop_price, target_price)
 
         state.open_positions.append({
             "symbol": symbol,
