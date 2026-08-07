@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 DTM Divergence Auto-Trading Bot - TheTrueTrade (نسخه هیبریدی)
-===================================================================
+====================================================================
 ربات معاملاتی هیبریدی که ابتدا داده را از راه عمومی دریافت کرده، سیگنال را تشخیص می‌دهد،
 سپس در صورت امکان به صرافی متصل شده و معامله را به صورت خودکار انجام می‌دهد.
 در صورت عدم اتصال، فقط سیگنال را به تلگرام ارسال می‌کند.
@@ -816,6 +816,22 @@ def analyze_and_execute():
     public_data = TrueTradePublicData()
     private_exchange = TrueTradePrivateExchange(API_KEY, API_SECRET, BASE_URL)
     
+    # ✅ تست اتصال به صرافی در ابتدای هر دور (قبل از تحلیل)
+    connection_ok = private_exchange.test_connection()
+    if connection_ok:
+        print("[EXCHANGE] ✅ اتصال به صرافی برقرار است.")
+    else:
+        print("[EXCHANGE] ❌ اتصال به صرافی برقرار نیست. فقط سیگنال ارسال می‌شود.")
+        # ارسال هشدار عدم اتصال (فقط یک بار)
+        if not hasattr(analyze_and_execute, "_connection_warning_sent"):
+            send_telegram_message(
+                "⚠️ **هشدار اتصال به صرافی**\n"
+                "ربات قادر به اتصال به صرافی نیست.\n"
+                "📌 **تأثیر:** فقط سیگنال‌ها ارسال می‌شوند و معامله‌ای انجام نمی‌شود.\n"
+                "🕒 **زمان ایران:** " + format_iran_time()
+            )
+            analyze_and_execute._connection_warning_sent = True
+    
     symbols = ["LTCUSDT", "DOGEUSDT", "ETHUSDT"]
     states = {symbol: SymbolState() for symbol in symbols}
     
@@ -856,9 +872,12 @@ def analyze_and_execute():
                     potential_profit = (entry_price - take_profit) / entry_price * 100
                     potential_loss = (stop_loss - entry_price) / entry_price * 100
                 
-                # پیام سیگنال (با قالب متفاوت از پروژه دوم)
+                # پیام سیگنال
                 iran_time = format_iran_time()
                 direction_text = "🟢 خرید (BUY)" if signal == "BUY" else "🔴 فروش (SELL)"
+                
+                # ✅ نمایش وضعیت اتصال در پیام سیگنال
+                connection_status = "✅ متصل" if private_exchange.connected else "❌ قطع"
                 
                 message = (
                     f"📈 **سیگنال معاملاتی - ربات حرفه‌ای DTM**\n"
@@ -866,6 +885,7 @@ def analyze_and_execute():
                     f"🔹 **نماد:** {symbol}\n"
                     f"🔸 **نوع:** {direction_text}\n"
                     f"💰 **قیمت فعلی:** {current_price:.4f}\n"
+                    f"📡 **اتصال به صرافی:** {connection_status}\n"
                     f"━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
                     f"📍 **نقطه ورود:** {entry_price:.4f}\n"
                     f"🛑 **حد ضرر:** {stop_loss:.4f}\n"
@@ -898,11 +918,10 @@ def analyze_and_execute():
                 })
                 save_history(history)
                 
-                # تلاش برای ترید خودکار
-                try:
-                    # تست اتصال به صرافی
-                    if private_exchange.test_connection(symbol):
-                        print(f"[EXCHANGE] اتصال به صرافی برقرار است. تلاش برای ثبت معامله...")
+                # ✅ تلاش برای ترید خودکار (فقط در صورت اتصال)
+                if private_exchange.connected:
+                    try:
+                        print(f"[EXCHANGE] تلاش برای ثبت معامله...")
                         
                         # محاسبه حجم و اهرم
                         risk_dist = abs(entry_price - stop_loss)
@@ -933,28 +952,16 @@ def analyze_and_execute():
                             send_telegram_message(success_msg)
                         else:
                             print(f"[SKIP] {symbol}: فاصله قیمت تا استاپ معتبر نیست")
-                    else:
-                        # عدم اتصال به صرافی
-                        warn_msg = (
-                            f"⚠️ **عدم اتصال به صرافی - ربات DTM**\n"
+                    except Exception as e:
+                        error_msg = (
+                            f"❌ **خطا در ثبت معامله - ربات DTM**\n"
                             f"🔹 **نماد:** {symbol}\n"
-                            f"💡 **وضعیت:** ربات قادر به اتصال به صرافی نیست.\n"
-                            f"📌 **اقدام:** فقط سیگنال ارسال شد. لطفاً به صورت دستی اقدام کنید.\n"
+                            f"💡 **خطا:** {str(e)[:100]}\n"
+                            f"📌 **اقدام:** لطفاً به صورت دستی اقدام کنید.\n"
                             f"🕒 **زمان ایران:** {format_iran_time()}"
                         )
-                        send_telegram_message(warn_msg)
-                        print(f"[WARNING] {symbol}: عدم اتصال به صرافی - فقط سیگنال ارسال شد")
-                        
-                except Exception as e:
-                    error_msg = (
-                        f"❌ **خطا در ثبت معامله - ربات DTM**\n"
-                        f"🔹 **نماد:** {symbol}\n"
-                        f"💡 **خطا:** {str(e)[:100]}\n"
-                        f"📌 **اقدام:** لطفاً به صورت دستی اقدام کنید.\n"
-                        f"🕒 **زمان ایران:** {format_iran_time()}"
-                    )
-                    send_telegram_message(error_msg)
-                    print(f"[ERROR] {symbol}: {e}")
+                        send_telegram_message(error_msg)
+                        print(f"[ERROR] {symbol}: {e}")
                 
                 # ریست هشدار
                 states[symbol].alert_sent = False
