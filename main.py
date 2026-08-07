@@ -102,8 +102,8 @@ class TrueTradePrivateExchange:
         self.connected = False
 
     def _sign_request(self, method, uri, timestamp):
-        path_only = uri.split('?')[0]
-        payload = f"{timestamp}{method.upper()}{path_only}"
+        # ✅ اصلاح شده: کوئری استرینگ حذف نمی‌شود (مطابق مستندات)
+        payload = f"{timestamp}{method.upper()}{uri}"
         signature = hmac.new(
             self.api_secret.encode('utf-8'),
             payload.encode('utf-8'),
@@ -125,10 +125,16 @@ class TrueTradePrivateExchange:
         url = f"{self.base_url}{uri}"
         response = self.session.request(method, url, headers=headers, json=data, timeout=15)
         
+        # ✅ لاگ کامل خطا برای دیباگ
         if not response.ok:
-            error_msg = f"\n[PRIVATE EXCHANGE ERROR] Status: {response.status_code}\nBody: {response.text}\n"
+            error_msg = f"\n[PRIVATE EXCHANGE ERROR] Status: {response.status_code}"
+            try:
+                error_body = response.json()
+                error_msg += f"\nError Response: {json.dumps(error_body, indent=2)}"
+            except:
+                error_msg += f"\nResponse Body: {response.text}"
             print(error_msg)
-            # اگر خطای 401 یا 403 باشد، اتصال را قطع می‌کنیم
+            
             if response.status_code in [401, 403]:
                 self.connected = False
             response.raise_for_status()
