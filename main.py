@@ -1065,7 +1065,7 @@ def analyze_and_execute():
             print(f"[ERROR] {symbol}: {e}")
 
 # =====================================================================================
-# حلقه اصلی
+# حلقه اصلی (با دیباگ کامل)
 # =====================================================================================
 def main_loop():
     last_daily_report = None
@@ -1074,7 +1074,11 @@ def main_loop():
     while True:
         try:
             print("[LOOP] شروع یک دور جدید بررسی...")
-            analyze_and_execute()
+            try:
+                analyze_and_execute()
+            except Exception as e:
+                print(f"[ANALYZE ERROR] {e}")
+                traceback.print_exc()
             print("[LOOP] پایان دور بررسی، ۶۰ ثانیه مکث...")
             
             today = datetime.now().date()
