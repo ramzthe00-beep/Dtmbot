@@ -2,9 +2,8 @@
 """
 DTM Divergence Auto-Trading Bot - TheTrueTrade (نسخه هیبریدی)
 ====================================================================
-ربات معاملاتی هیبریدی که ابتدا داده را از راه عمومی دریافت کرده، سیگنال را تشخیص می‌دهد،
-سپس در صورت امکان به صرافی متصل شده و معامله را به صورت خودکار انجام می‌دهد.
-در صورت عدم اتصال، فقط سیگنال را به تلگرام ارسال می‌کند.
+ربات معاملاتی هیبریدی که ابتدا اتصال به صرافی را تست کرده، سپس داده را دریافت می‌کند.
+در صورت اتصال، معامله خودکار انجام می‌شود و در غیر این صورت فقط سیگنال ارسال می‌شود.
 """
 
 import os
@@ -209,12 +208,15 @@ class TrueTradePrivateExchange:
 
     def test_connection(self, symbol="N/A"):
         """تست اتصال به صرافی با دریافت پوزیشن‌ها"""
+        print(f"[EXCHANGE] تست اتصال به صرافی... (نماد: {symbol})")
         try:
             self._request('GET', '/futures/positions', symbol=symbol)
             self.connected = True
+            print("[EXCHANGE] ✅ اتصال به صرافی برقرار است.")
             return True
-        except:
+        except Exception as e:
             self.connected = False
+            print(f"[EXCHANGE] ❌ اتصال به صرافی برقرار نیست. خطا: {e}")
             return False
 
     def fetch_positions(self, symbol="N/A"):
@@ -809,31 +811,42 @@ def send_monthly_report():
     send_telegram_message(message)
 
 # =====================================================================================
-# تابع اصلی تحلیل، ارسال سیگنال و ترید خودکار
+# تابع اصلی تحلیل، ارسال سیگنال و ترید خودکار (با اولویت تست اتصال)
 # =====================================================================================
 def analyze_and_execute():
     """دریافت داده، تحلیل، ارسال سیگنال و در صورت امکان ترید خودکار"""
-    print("[ANALYZE] شروع تحلیل...")
-    public_data = TrueTradePublicData()
+    
+    # =================================================================================
+    # گام 1: تست اتصال به صرافی (اولویت اول)
+    # =================================================================================
+    print("[ANALYZE] شروع فرآیند تحلیل و معامله...")
     private_exchange = TrueTradePrivateExchange(API_KEY, API_SECRET, BASE_URL)
     
-    # ✅ تست اتصال به صرافی در ابتدای هر دور
+    # تست اتصال به صرافی
     print("[EXCHANGE] در حال تست اتصال به صرافی...")
     connection_ok = private_exchange.test_connection()
-    if connection_ok:
-        print("[EXCHANGE] ✅ اتصال به صرافی برقرار است.")
-    else:
-        print("[EXCHANGE] ❌ اتصال به صرافی برقرار نیست. فقط سیگنال ارسال می‌شود.")
-        # ارسال هشدار عدم اتصال (فقط یک بار)
-        if not hasattr(analyze_and_execute, "_connection_warning_sent"):
+    
+    # ارسال گزارش وضعیت اتصال به تلگرام (فقط یک بار)
+    if not hasattr(analyze_and_execute, "_connection_reported"):
+        if connection_ok:
             send_telegram_message(
-                "⚠️ **هشدار اتصال به صرافی**\n"
+                "✅ **اتصال به صرافی برقرار است**\n"
+                "ربات قادر به انجام معاملات خودکار است.\n"
+                "🕒 **زمان ایران:** " + format_iran_time()
+            )
+        else:
+            send_telegram_message(
+                "⚠️ **هشدار: عدم اتصال به صرافی**\n"
                 "ربات قادر به اتصال به صرافی نیست.\n"
                 "📌 **تأثیر:** فقط سیگنال‌ها ارسال می‌شوند و معامله‌ای انجام نمی‌شود.\n"
                 "🕒 **زمان ایران:** " + format_iran_time()
             )
-            analyze_and_execute._connection_warning_sent = True
+        analyze_and_execute._connection_reported = True
     
+    # =================================================================================
+    # گام 2: دریافت داده و تحلیل
+    # =================================================================================
+    public_data = TrueTradePublicData()
     symbols = ["LTCUSDT", "DOGEUSDT", "ETHUSDT"]
     states = {symbol: SymbolState() for symbol in symbols}
     
@@ -878,7 +891,7 @@ def analyze_and_execute():
                 iran_time = format_iran_time()
                 direction_text = "🟢 خرید (BUY)" if signal == "BUY" else "🔴 فروش (SELL)"
                 
-                # ✅ نمایش وضعیت اتصال در پیام سیگنال
+                # نمایش وضعیت اتصال در پیام سیگنال
                 connection_status = "✅ متصل" if private_exchange.connected else "❌ قطع"
                 
                 message = (
@@ -920,7 +933,7 @@ def analyze_and_execute():
                 })
                 save_history(history)
                 
-                # ✅ تلاش برای ترید خودکار (فقط در صورت اتصال)
+                # تلاش برای ترید خودکار (فقط در صورت اتصال)
                 if private_exchange.connected:
                     try:
                         print(f"[EXCHANGE] تلاش برای ثبت معامله...")
