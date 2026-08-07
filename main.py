@@ -3,7 +3,7 @@
 DTM Divergence Auto-Trading Bot - TheTrueTrade (نسخه هیبریدی)
 ====================================================================
 ربات معاملاتی هیبریدی با حافظه ۱۰۰ Pivot، سیستم امتیازدهی ۳ سطحی و Diagnostic کامل
-نسخه اصلاح شده - رفع باگ fatal در تشخیص Pivot + لاگ هوشمند
+نسخه اصلاح شده - رفع باگ fatal در تشخیص Pivot + لاگ هوشمند + logging
 """
 
 import os
@@ -18,6 +18,19 @@ import pandas as pd
 from datetime import datetime, timezone, timedelta
 from flask import Flask
 import json
+import logging
+
+# =====================================================================================
+# تنظیمات logging
+# =====================================================================================
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.StreamHandler()
+    ]
+)
+logger = logging.getLogger(__name__)
 
 # =====================================================================================
 # کلیدهای API (برای اتصال به صرافی در صورت امکان)
@@ -86,7 +99,7 @@ class TrueTradePublicData:
             return df
             
         except Exception as e:
-            print(f"[PUBLIC FETCH ERROR] {symbol}: {e}")
+            logger.error(f"[PUBLIC FETCH ERROR] {symbol}: {e}")
             return None
 
 # =====================================================================================
@@ -140,9 +153,9 @@ class TrueTradePrivateExchange:
                     f"💡 **توصیه:** لاگ‌های Railway را برای جزئیات بیشتر بررسی کنید."
                 )
                 send_telegram_message(message)
-                print(f"[DEBUG] گزارش دیباگ به تلگرام ارسال شد (ساعت {iran_time})")
+                logger.info(f"[DEBUG] گزارش دیباگ به تلگرام ارسال شد (ساعت {iran_time})")
             except Exception as e:
-                print(f"[DEBUG REPORT ERROR] {e}")
+                logger.error(f"[DEBUG REPORT ERROR] {e}")
 
     def _request(self, method, uri, data=None, symbol="N/A"):
         timestamp = str(int(time.time() * 1000))
@@ -157,23 +170,23 @@ class TrueTradePrivateExchange:
 
         url = f"{self.base_url}{uri}"
         
-        print(f"\n[DEBUG REQUEST] {symbol}")
-        print(f"Method: {method}")
-        print(f"URL: {url}")
-        print(f"Headers: {headers}")
+        logger.info(f"[DEBUG REQUEST] {symbol}")
+        logger.info(f"Method: {method}")
+        logger.info(f"URL: {url}")
+        logger.info(f"Headers: {headers}")
         if data:
-            print(f"Body: {json.dumps(data, indent=2)}")
-        print(f"Signature Payload: {timestamp}{method.upper()}{uri}")
+            logger.info(f"Body: {json.dumps(data, indent=2)}")
+        logger.info(f"Signature Payload: {timestamp}{method.upper()}{uri}")
         
         response = self.session.request(method, url, headers=headers, json=data, timeout=15)
         
-        print(f"\n[DEBUG RESPONSE] {symbol}")
-        print(f"Status: {response.status_code}")
+        logger.info(f"[DEBUG RESPONSE] {symbol}")
+        logger.info(f"Status: {response.status_code}")
         try:
-            print(f"Body: {json.dumps(response.json(), indent=2)}")
+            logger.info(f"Body: {json.dumps(response.json(), indent=2)}")
         except:
-            print(f"Body: {response.text}")
-        print("-" * 50)
+            logger.info(f"Body: {response.text}")
+        logger.info("-" * 50)
         
         if not response.ok:
             error_msg = f"\n[PRIVATE EXCHANGE ERROR] Status: {response.status_code}"
@@ -182,7 +195,7 @@ class TrueTradePrivateExchange:
                 error_msg += f"\nError Response: {json.dumps(error_body, indent=2)}"
             except:
                 error_msg += f"\nResponse Body: {response.text}"
-            print(error_msg)
+            logger.error(error_msg)
             
             self._send_debug_to_telegram(method, uri, headers, data, response, symbol)
             
@@ -194,22 +207,22 @@ class TrueTradePrivateExchange:
         return response.json()
 
     def test_connection(self, symbol="N/A"):
-        print(f"[EXCHANGE] تست اتصال به صرافی... (نماد: {symbol})")
+        logger.info(f"[EXCHANGE] تست اتصال به صرافی... (نماد: {symbol})")
         try:
             response = self._request('GET', '/futures/positions', symbol=symbol)
             self.connected = True
-            print("[EXCHANGE] ✅ اتصال به صرافی برقرار است.")
-            print(f"[EXCHANGE] پاسخ سرور: {json.dumps(response, indent=2)[:200]}")
+            logger.info("[EXCHANGE] ✅ اتصال به صرافی برقرار است.")
+            logger.info(f"[EXCHANGE] پاسخ سرور: {json.dumps(response, indent=2)[:200]}")
             return True
         except requests.exceptions.HTTPError as e:
             self.connected = False
-            print(f"[EXCHANGE] ❌ اتصال به صرافی برقرار نیست. خطای HTTP: {e.response.status_code}")
+            logger.error(f"[EXCHANGE] ❌ اتصال به صرافی برقرار نیست. خطای HTTP: {e.response.status_code}")
             if e.response:
-                print(f"[EXCHANGE] متن خطا: {e.response.text}")
+                logger.error(f"[EXCHANGE] متن خطا: {e.response.text}")
             return False
         except Exception as e:
             self.connected = False
-            print(f"[EXCHANGE] ❌ اتصال به صرافی برقرار نیست. خطا: {type(e).__name__}: {e}")
+            logger.error(f"[EXCHANGE] ❌ اتصال به صرافی برقرار نیست. خطا: {type(e).__name__}: {e}")
             return False
 
     def fetch_positions(self, symbol="N/A"):
@@ -301,7 +314,7 @@ def send_telegram_message(message: str):
         response = requests.post(url, json=payload, timeout=10)
         response.raise_for_status()
     except Exception as e:
-        print(f"[TELEGRAM ERROR] {e}")
+        logger.error(f"[TELEGRAM ERROR] {e}")
 
 def get_iran_time():
     return datetime.now(timezone(timedelta(hours=3, minutes=30)))
@@ -635,7 +648,7 @@ def detect_signal(df, state, symbol, debug=False):
         """اضافه کردن پیام به لاگ"""
         debug_log.append(msg)
         if debug:
-            print(msg)
+            logger.info(msg)
     
     log(f"🔍 DTM ENGINE — {symbol} | {format_iran_time()}")
     
@@ -661,19 +674,30 @@ def detect_signal(df, state, symbol, debug=False):
     right_bars = 3
     last_valid_pivot_index = n - right_bars - 1
     
-    # ✅ start_bar باید طوری تنظیم شود که Pivotهای جدید تأیید شده را از دست ندهیم
-    start_bar = max(0, min(state.last_processed_bar, last_valid_pivot_index))
+    # ✅ محاسبه start_bar با lookback امن
+    if state.last_processed_bar == 0:
+        # اولین اجرا: از صفر شروع کن
+        start_bar = 0
+    else:
+        # اجراهای بعدی: ۵ کندل عقب‌تر برو تا Pivotهای تازه تأیید شده رو بگیری
+        start_bar = max(0, state.last_processed_bar - 5)
+    
+    # محدود کردن به بازه معتبر
+    start_bar = min(start_bar, last_valid_pivot_index)
     
     log(f"   n={n}, last_valid={last_valid_pivot_index}, start={start_bar}")
     log(f"   last_processed={state.last_processed_bar}")
     
-    # پیدا کردن همه Pivotهای جدید (فقط در بازه معتبر)
+    # پیدا کردن Pivotهای جدید (با جلوگیری از تکراری)
     new_pivots_high = []
     new_pivots_low = []
     
-    # ✅ فقط تا last_valid_pivot_index بررسی می‌کنیم
+    # ست کردن barهای موجود برای چک سریع
+    existing_high_bars = {p['bar'] for p in state.pivot_highs}
+    existing_low_bars = {p['bar'] for p in state.pivot_lows}
+    
     for i in range(start_bar, last_valid_pivot_index + 1):
-        if not pd.isna(pivot_high.iloc[i]):
+        if not pd.isna(pivot_high.iloc[i]) and i not in existing_high_bars:
             new_pivots_high.append({
                 'price': pivot_high.iloc[i],
                 'bar': i,
@@ -681,7 +705,7 @@ def detect_signal(df, state, symbol, debug=False):
                 'macdline': macd_line.iloc[i],
                 'hist': hist_line.iloc[i]
             })
-        if not pd.isna(pivot_low.iloc[i]):
+        if not pd.isna(pivot_low.iloc[i]) and i not in existing_low_bars:
             new_pivots_low.append({
                 'price': pivot_low.iloc[i],
                 'bar': i,
@@ -691,12 +715,13 @@ def detect_signal(df, state, symbol, debug=False):
             })
     
     # ✅ به‌روزرسانی last_processed_bar
-    if n > state.last_processed_bar:
-        state.last_processed_bar = last_valid_pivot_index + 1
+    state.last_processed_bar = last_valid_pivot_index + 1
     
+    # اضافه کردن به حافظه
     state.pivot_highs.extend(new_pivots_high)
     state.pivot_lows.extend(new_pivots_low)
     
+    # محدود کردن به ۱۰۰ تا
     if len(state.pivot_highs) > 100:
         state.pivot_highs = state.pivot_highs[-100:]
     if len(state.pivot_lows) > 100:
@@ -733,16 +758,16 @@ def detect_signal(df, state, symbol, debug=False):
                     f"```\n{telegram_debug[:1500]}\n```"
                 )
             else:
-                # اگر Pivot جدید نیست، فقط یک پیام کوتاه
+                # اگر Pivot جدید نیست، فقط یک پیام کوتاه (۵ بار اول)
                 if state.telegram_log_count <= 5:
                     send_telegram_message(
                         f"ℹ️ **Status #{state.telegram_log_count} - {symbol}**\n"
                         f"🕒 {format_iran_time()}\n"
                         f"📊 Pivots in memory: H={len(state.pivot_highs)}, L={len(state.pivot_lows)}\n"
-                        f"💤 No new pivots found."
+                        f"💤 No new pivots found in this cycle."
                     )
         except Exception as e:
-            print(f"[TELEGRAM LOG ERROR] {e}")
+            logger.error(f"[TELEGRAM LOG ERROR] {e}")
     
     early_signal = False
     if len(new_pivots_high) > 0 or len(new_pivots_low) > 0:
@@ -867,7 +892,7 @@ def check_proximity(symbol, current_price, entry, stop, target):
             f"💡 **وضعیت:** در آستانه رسیدن به تارگت!"
         )
         send_telegram_message(message)
-        print(f"[PROXIMITY] {symbol}: نزدیک به تارگت! فاصله: {target_distance:.2f}%")
+        logger.info(f"[PROXIMITY] {symbol}: نزدیک به تارگت! فاصله: {target_distance:.2f}%")
     
     elif stop_distance < 5 and stop_distance > 0:
         message = (
@@ -880,7 +905,7 @@ def check_proximity(symbol, current_price, entry, stop, target):
             f"💡 **وضعیت:** در آستانه رسیدن به استاپ!"
         )
         send_telegram_message(message)
-        print(f"[PROXIMITY] {symbol}: نزدیک به استاپ! فاصله: {stop_distance:.2f}%")
+        logger.info(f"[PROXIMITY] {symbol}: نزدیک به استاپ! فاصله: {stop_distance:.2f}%")
 
 # =====================================================================================
 # پیگیری سیگنال‌های باز
@@ -1032,10 +1057,10 @@ def send_monthly_report():
 def analyze_and_execute():
     """دریافت داده، تحلیل، ارسال سیگنال و در صورت امکان ترید خودکار"""
     
-    print("[ANALYZE] شروع فرآیند تحلیل و معامله...")
+    logger.info("[ANALYZE] شروع فرآیند تحلیل و معامله...")
     private_exchange = TrueTradePrivateExchange(API_KEY, API_SECRET, BASE_URL)
     
-    print("[EXCHANGE] در حال تست اتصال به صرافی...")
+    logger.info("[EXCHANGE] در حال تست اتصال به صرافی...")
     connection_ok = private_exchange.test_connection()
     
     # پیام وضعیت اتصال (فقط در اولین اجرا یا تغییر وضعیت)
@@ -1072,10 +1097,10 @@ def analyze_and_execute():
         try:
             df = public_data.fetch_ohlcv(symbol, '1m', 500)
             if df is None or df.empty:
-                print(f"[SKIP] {symbol}: داده‌ای دریافت نشد")
+                logger.warning(f"[SKIP] {symbol}: داده‌ای دریافت نشد")
                 continue
             
-            print(f"[DATA] {symbol}: {len(df)} کندل دریافت شد")
+            logger.info(f"[DATA] {symbol}: {len(df)} کندل دریافت شد")
             
             # تشخیص سیگنال با دیباگ فعال
             signal, entry_price, stop_loss, take_profit, early_signal, emoji, label, score = detect_signal(
@@ -1094,7 +1119,7 @@ def analyze_and_execute():
                 )
                 send_telegram_message(message)
                 SYMBOL_STATES[symbol].alert_sent = True
-                print(f"[EARLY] {symbol}: هشدار آماده باش ارسال شد")
+                logger.info(f"[EARLY] {symbol}: هشدار آماده باش ارسال شد")
             
             if signal is not None and stop_loss is not None and take_profit is not None:
                 # تخمین سود و ضرر
@@ -1134,7 +1159,7 @@ def analyze_and_execute():
                 )
                 
                 send_telegram_message(message)
-                print(f"[SIGNAL] {symbol}: {signal} | Score: {score}/5 | Entry: {entry_price:.4f} | SL: {stop_loss:.4f} | TP: {take_profit:.4f}")
+                logger.info(f"[SIGNAL] {symbol}: {signal} | Score: {score}/5 | Entry: {entry_price:.4f} | SL: {stop_loss:.4f} | TP: {take_profit:.4f}")
                 
                 # ذخیره سیگنال در تاریخچه
                 history = load_history()
@@ -1156,7 +1181,7 @@ def analyze_and_execute():
                 # تلاش برای ترید خودکار
                 if private_exchange.connected:
                     try:
-                        print(f"[EXCHANGE] تلاش برای ثبت معامله...")
+                        logger.info(f"[EXCHANGE] تلاش برای ثبت معامله...")
                         risk_dist = abs(entry_price - stop_loss)
                         if risk_dist > 0:
                             qty = 3.5 / risk_dist
@@ -1165,7 +1190,7 @@ def analyze_and_execute():
                                 symbol, "market", signal.lower(), qty, None,
                                 {'leverage': leverage, 'stopLoss': stop_loss, 'takeProfit': take_profit}
                             )
-                            print(f"[ORDER EXECUTED] {symbol}: {signal} | Qty: {qty:.6f} | Leverage: {leverage}x")
+                            logger.info(f"[ORDER EXECUTED] {symbol}: {signal} | Qty: {qty:.6f} | Leverage: {leverage}x")
                             success_msg = (
                                 f"✅ **معامله با موفقیت ثبت شد! - ربات DTM**\n"
                                 f"🔹 **نماد:** {symbol}\n"
@@ -1179,7 +1204,7 @@ def analyze_and_execute():
                             )
                             send_telegram_message(success_msg)
                         else:
-                            print(f"[SKIP] {symbol}: فاصله قیمت تا استاپ معتبر نیست")
+                            logger.warning(f"[SKIP] {symbol}: فاصله قیمت تا استاپ معتبر نیست")
                     except Exception as e:
                         error_msg = (
                             f"❌ **خطا در ثبت معامله - ربات DTM**\n"
@@ -1189,15 +1214,15 @@ def analyze_and_execute():
                             f"🕒 **زمان ایران:** {format_iran_time()}"
                         )
                         send_telegram_message(error_msg)
-                        print(f"[ERROR] {symbol}: {e}")
+                        logger.error(f"[ERROR] {symbol}: {e}")
                 
                 SYMBOL_STATES[symbol].alert_sent = False
                 
             else:
-                print(f"[ANALYSIS] {symbol}: بدون سیگنال")
+                logger.info(f"[ANALYSIS] {symbol}: بدون سیگنال")
                 
         except Exception as e:
-            print(f"[ERROR] {symbol}: {e}")
+            logger.error(f"[ERROR] {symbol}: {e}")
             traceback.print_exc()
 
 # =====================================================================================
@@ -1209,17 +1234,17 @@ def main_loop():
     
     while True:
         try:
-            print("\n" + "="*50)
-            print(f"[LOOP] شروع دور جدید - {format_iran_time()}")
-            print("="*50)
+            logger.info("="*50)
+            logger.info(f"[LOOP] شروع دور جدید - {format_iran_time()}")
+            logger.info("="*50)
             
             try:
                 analyze_and_execute()
             except Exception as e:
-                print(f"[ANALYZE ERROR] {e}")
+                logger.error(f"[ANALYZE ERROR] {e}")
                 traceback.print_exc()
             
-            print(f"[LOOP] پایان دور بررسی، ۶۰ ثانیه مکث...")
+            logger.info(f"[LOOP] پایان دور بررسی، ۶۰ ثانیه مکث...")
             
             today = datetime.now().date()
             if last_daily_report != today:
@@ -1233,7 +1258,7 @@ def main_loop():
             time.sleep(60)
             
         except Exception as e:
-            print(f"[LOOP ERROR] {e}")
+            logger.error(f"[LOOP ERROR] {e}")
             traceback.print_exc()
             time.sleep(60)
 
@@ -1253,11 +1278,16 @@ def run_flask():
 # اجرای اصلی
 # =====================================================================================
 if __name__ == "__main__":
+    logger.info("="*60)
+    logger.info("DTM Hybrid Bot Starting...")
+    logger.info("="*60)
+    
     send_telegram_message(
         "🤖 **ربات معاملاتی هیبریدی DTM (Hybrid Pro) راه‌اندازی شد!**\n"
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
         "📊 در حال دریافت داده و تحلیل بازار...\n"
         "✅ **باگ fatal در تشخیص Pivot رفع شد**\n"
+        "✅ **سیستم logging فعال شد**\n"
         "📡 **لاگ هوشمند:** ۵ بار اول هر ۵ دقیقه، سپس هر ۶ ساعت\n"
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
         "⚠️ **توجه:** در صورت عدم اتصال به صرافی، فقط سیگنال ارسال می‌شود."
@@ -1265,7 +1295,7 @@ if __name__ == "__main__":
     
     flask_thread = threading.Thread(target=run_flask, daemon=True)
     flask_thread.start()
-    print("[STARTUP] وب‌سرور Flask روی پورت 10000 راه‌اندازی شد.")
+    logger.info("[STARTUP] وب‌سرور Flask روی پورت 10000 راه‌اندازی شد.")
     
-    print("[STARTUP] شروع حلقه اصلی...")
+    logger.info("[STARTUP] شروع حلقه اصلی...")
     main_loop()
