@@ -207,16 +207,23 @@ class TrueTradePrivateExchange:
         return response.json()
 
     def test_connection(self, symbol="N/A"):
-        """تست اتصال به صرافی با دریافت پوزیشن‌ها"""
+        """تست اتصال به صرافی با دریافت پوزیشن‌ها و نمایش نتیجه دقیق"""
         print(f"[EXCHANGE] تست اتصال به صرافی... (نماد: {symbol})")
         try:
-            self._request('GET', '/futures/positions', symbol=symbol)
+            response = self._request('GET', '/futures/positions', symbol=symbol)
             self.connected = True
             print("[EXCHANGE] ✅ اتصال به صرافی برقرار است.")
+            print(f"[EXCHANGE] پاسخ سرور: {json.dumps(response, indent=2)[:200]}")
             return True
+        except requests.exceptions.HTTPError as e:
+            self.connected = False
+            print(f"[EXCHANGE] ❌ اتصال به صرافی برقرار نیست. خطای HTTP: {e.response.status_code}")
+            if e.response:
+                print(f"[EXCHANGE] متن خطا: {e.response.text}")
+            return False
         except Exception as e:
             self.connected = False
-            print(f"[EXCHANGE] ❌ اتصال به صرافی برقرار نیست. خطا: {e}")
+            print(f"[EXCHANGE] ❌ اتصال به صرافی برقرار نیست. خطا: {type(e).__name__}: {e}")
             return False
 
     def fetch_positions(self, symbol="N/A"):
@@ -663,8 +670,7 @@ def check_proximity(symbol, current_price, entry, stop, target):
 
 # =====================================================================================
 # پیگیری سیگنال‌های باز
-# =====================================================================================
-def track_open_signals():
+# =====================================================================================def track_open_signals():
     history = load_history()
     data = TrueTradePublicData()
     exchange = TrueTradePrivateExchange(API_KEY, API_SECRET, BASE_URL)
