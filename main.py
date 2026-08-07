@@ -813,10 +813,12 @@ def send_monthly_report():
 # =====================================================================================
 def analyze_and_execute():
     """دریافت داده، تحلیل، ارسال سیگنال و در صورت امکان ترید خودکار"""
+    print("[ANALYZE] شروع تحلیل...")
     public_data = TrueTradePublicData()
     private_exchange = TrueTradePrivateExchange(API_KEY, API_SECRET, BASE_URL)
     
-    # ✅ تست اتصال به صرافی در ابتدای هر دور (قبل از تحلیل)
+    # ✅ تست اتصال به صرافی در ابتدای هر دور
+    print("[EXCHANGE] در حال تست اتصال به صرافی...")
     connection_ok = private_exchange.test_connection()
     if connection_ok:
         print("[EXCHANGE] ✅ اتصال به صرافی برقرار است.")
@@ -998,6 +1000,7 @@ def main_loop():
             
         except Exception as e:
             print(f"[LOOP ERROR] {e}")
+            traceback.print_exc()
             time.sleep(60)
 
 # =====================================================================================
