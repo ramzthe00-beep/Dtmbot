@@ -4,6 +4,7 @@ DTM Divergence Auto-Trading Bot - TheTrueTrade (نسخه هیبریدی)
 ====================================================================
 ربات معاملاتی هیبریدی که ابتدا اتصال به صرافی را تست کرده، سپس داده را دریافت می‌کند.
 در صورت اتصال، معامله خودکار انجام می‌شود و در غیر این صورت فقط سیگنال ارسال می‌شود.
+با قابلیت ذخیره ۱۰۰ Pivot اخیر برای هر نماد
 """
 
 import os
@@ -467,10 +468,15 @@ def resolve_final_target(entry_price: float, stop_price: float, tp1_raw: float, 
         return entry_price - risk_dist * min_rr_ratio
 
 # =====================================================================================
-# کلاس وضعیت (برای نگهداری قله‌ها و کف‌ها)
+# کلاس وضعیت (با حافظه ۱۰۰ Pivot) - تغییرات اینجا اعمال شده
 # =====================================================================================
 class SymbolState:
     def __init__(self):
+        # ✅ لیست‌های ۱۰۰ Pivot برای ذخیره تاریخچه
+        self.pivot_highs = []  # هر المان: {'price': float, 'bar': int, 'rsi': float, 'macdline': float, 'hist': float}
+        self.pivot_lows = []   # هر المان: {'price': float, 'bar': int, 'rsi': float, 'macdline': float, 'hist': float}
+        
+        # متغیرهای قبلی برای سازگاری با منطق فعلی
         self.ph_price_2 = self.ph_price_1 = None
         self.ph_bar_2 = self.ph_bar_1 = None
         self.ph_rsi_2 = self.ph_rsi_1 = None
@@ -484,6 +490,7 @@ class SymbolState:
         self.pl_hist_2 = self.pl_hist_1 = None
         
         self.alert_sent = False
+        self.last_processed_bar = 0  # برای پیگیری Pivotهای جدید
 
 # =====================================================================================
 # مدیریت تاریخچه معاملات
@@ -512,7 +519,7 @@ def update_trade_result(symbol, signal_time, result, price):
     save_history(history)
 
 # =====================================================================================
-# تابع تشخیص سیگنال کامل (با هشدار زودهنگام)
+# تابع تشخیص سیگنال کامل (با هشدار زودهنگام و حافظه ۱۰۰ Pivot)
 # =====================================================================================
 def detect_signal(df, state):
     closed_df = df.iloc[:-1].reset_index(drop=True)
@@ -531,19 +538,82 @@ def detect_signal(df, state):
     pivot_low = find_pivot_low(low, 5, 3)
 
     last_i = n - 1
-    pivot_check_i = last_i - 3
     
-    early_check_i = last_i - 2
+    # ✅ پیدا کردن همه Pivotهای جدید از آخرین پردازش
+    new_pivots_high = []
+    new_pivots_low = []
+    
+    start_bar = state.last_processed_bar
+    for i in range(start_bar, last_i + 1):
+        if not pd.isna(pivot_high.iloc[i]):
+            new_pivots_high.append({
+                'price': pivot_high.iloc[i],
+                'bar': i,
+                'rsi': rsi_val.iloc[i],
+                'macdline': macd_line.iloc[i],
+                'hist': hist_line.iloc[i]
+            })
+        if not pd.isna(pivot_low.iloc[i]):
+            new_pivots_low.append({
+                'price': pivot_low.iloc[i],
+                'bar': i,
+                'rsi': rsi_val.iloc[i],
+                'macdline': macd_line.iloc[i],
+                'hist': hist_line.iloc[i]
+            })
+    
+    # به‌روزرسانی آخرین بار پردازش‌شده
+    state.last_processed_bar = last_i + 1
+    
+    # ✅ اضافه کردن Pivotهای جدید به تاریخچه
+    state.pivot_highs.extend(new_pivots_high)
+    state.pivot_lows.extend(new_pivots_low)
+    
+    # ✅ محدود کردن تاریخچه به ۱۰۰ Pivot اخیر
+    if len(state.pivot_highs) > 100:
+        state.pivot_highs = state.pivot_highs[-100:]
+    if len(state.pivot_lows) > 100:
+        state.pivot_lows = state.pivot_lows[-100:]
+    
+    # ✅ به‌روزرسانی متغیرهای قبلی با دو Pivot آخر (برای سازگاری با منطق فعلی)
+    if len(state.pivot_highs) >= 2:
+        ph_1 = state.pivot_highs[-2]
+        ph_2 = state.pivot_highs[-1]
+        state.ph_price_1, state.ph_bar_1 = ph_1['price'], ph_1['bar']
+        state.ph_rsi_1, state.ph_macdline_1, state.ph_hist_1 = ph_1['rsi'], ph_1['macdline'], ph_1['hist']
+        state.ph_price_2, state.ph_bar_2 = ph_2['price'], ph_2['bar']
+        state.ph_rsi_2, state.ph_macdline_2, state.ph_hist_2 = ph_2['rsi'], ph_2['macdline'], ph_2['hist']
+    elif len(state.pivot_highs) >= 1:
+        ph_1 = state.pivot_highs[-1]
+        state.ph_price_1, state.ph_bar_1 = ph_1['price'], ph_1['bar']
+        state.ph_rsi_1, state.ph_macdline_1, state.ph_hist_1 = ph_1['rsi'], ph_1['macdline'], ph_1['hist']
+    
+    if len(state.pivot_lows) >= 2:
+        pl_1 = state.pivot_lows[-2]
+        pl_2 = state.pivot_lows[-1]
+        state.pl_price_1, state.pl_bar_1 = pl_1['price'], pl_1['bar']
+        state.pl_rsi_1, state.pl_macdline_1, state.pl_hist_1 = pl_1['rsi'], pl_1['macdline'], pl_1['hist']
+        state.pl_price_2, state.pl_bar_2 = pl_2['price'], pl_2['bar']
+        state.pl_rsi_2, state.pl_macdline_2, state.pl_hist_2 = pl_2['rsi'], pl_2['macdline'], pl_2['hist']
+    elif len(state.pivot_lows) >= 1:
+        pl_1 = state.pivot_lows[-1]
+        state.pl_price_1, state.pl_bar_1 = pl_1['price'], pl_1['bar']
+        state.pl_rsi_1, state.pl_macdline_1, state.pl_hist_1 = pl_1['rsi'], pl_1['macdline'], pl_1['hist']
+    
+    # ✅ هشدار زودهنگام (اگر Pivot جدیدی در ۲ بار آخر وجود داشته باشد)
     early_signal = False
-    if early_check_i >= 5:
-        early_high = not pd.isna(pivot_high.iloc[early_check_i])
-        early_low = not pd.isna(pivot_low.iloc[early_check_i])
-        if early_high or early_low:
-            early_signal = True
-
+    if len(new_pivots_high) > 0 or len(new_pivots_low) > 0:
+        early_signal = True
+    
+    # =================================================================================
+    # منطق واگرایی (دقیقاً مثل قبل با دو Pivot آخر - هیچ تغییری نکرده)
+    # =================================================================================
+    
+    pivot_check_i = last_i - 3
     if pivot_check_i < 5:
         return None, None, None, None, early_signal
 
+    # ادامه منطق قبلی (با همان متغیرهای ph_price_1, ph_price_2 و ...)
     new_pivot_high = not pd.isna(pivot_high.iloc[pivot_check_i])
     new_pivot_low = not pd.isna(pivot_low.iloc[pivot_check_i])
 
