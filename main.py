@@ -903,22 +903,57 @@ def analyze_and_execute():
     print("[EXCHANGE] در حال تست اتصال به صرافی...")
     connection_ok = private_exchange.test_connection()
     
-    # ارسال گزارش وضعیت اتصال به تلگرام (فقط یک بار)
-    if not hasattr(analyze_and_execute, "_connection_reported"):
-        if connection_ok:
-            send_telegram_message(
-                "✅ **اتصال به صرافی برقرار است**\n"
-                "ربات قادر به انجام معاملات خودکار است.\n"
-                "🕒 **زمان ایران:** " + format_iran_time()
-            )
-        else:
-            send_telegram_message(
-                "⚠️ **هشدار: عدم اتصال به صرافی**\n"
-                "ربات قادر به اتصال به صرافی نیست.\n"
-                "📌 **تأثیر:** فقط سیگنال‌ها ارسال می‌شوند و معامله‌ای انجام نمی‌شود.\n"
-                "🕒 **زمان ایران:** " + format_iran_time()
-            )
-        analyze_and_execute._connection_reported = True
+    # =================================================================================
+    # ارسال پیام وضعیت (اتصال/عدم اتصال) به همراه قابلیت‌ها
+    # =================================================================================
+    current_time = format_iran_time()
+    
+    # پیام وضعیت اتصال
+    if connection_ok:
+        connection_status = "✅ **اتصال به صرافی برقرار است**"
+        connection_detail = "ربات قادر به انجام معاملات خودکار است."
+    else:
+        connection_status = "⚠️ **اتصال به صرافی برقرار نیست**"
+        connection_detail = "ربات فقط سیگنال ارسال می‌کند و معامله‌ای انجام نمی‌شود."
+    
+    # پیام قابلیت‌های فعال
+    capabilities = (
+        "🔧 **قابلیت‌های فعال در ربات:**\n"
+        "• 📊 دریافت داده از راه عمومی (فعال)\n"
+        "• 🧠 تشخیص سیگنال با استراتژی DTM (فعال)\n"
+        "• 💰 ترید خودکار در صورت اتصال به صرافی ({})\n"
+        "• 🔔 ارسال هشدار در صورت عدم اتصال (فعال)\n"
+        "• 📅 گزارش‌های روزانه و ماهانه (فعال)\n"
+        "• ⚡ هشدارهای آماده باش، تارگت و استاپ (فعال)\n"
+        "• 📈 ذخیره ۱۰۰ Pivot اخیر برای تحلیل دقیق‌تر (فعال)"
+    ).format("✅ فعال" if connection_ok else "❌ غیرفعال")
+    
+    # ارسال پیام ترکیبی
+    full_message = (
+        f"📡 **وضعیت اتصال به صرافی:**\n"
+        f"{connection_status}\n"
+        f"{connection_detail}\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"{capabilities}\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"🕒 **زمان ایران:** {current_time}"
+    )
+    
+    # ارسال پیام فقط در صورت تغییر وضعیت یا اولین بار
+    if not hasattr(analyze_and_execute, "_last_status"):
+        # اولین بار
+        send_telegram_message(full_message)
+        analyze_and_execute._last_status = connection_ok
+    elif analyze_and_execute._last_status != connection_ok:
+        # تغییر وضعیت
+        send_telegram_message(
+            f"🔄 **تغییر وضعیت اتصال به صرافی**\n"
+            f"وضعیت قبلی: {'✅ متصل' if analyze_and_execute._last_status else '❌ قطع'}\n"
+            f"وضعیت جدید: {'✅ متصل' if connection_ok else '❌ قطع'}\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"{full_message}"
+        )
+        analyze_and_execute._last_status = connection_ok
     
     # =================================================================================
     # گام 2: دریافت داده و تحلیل
