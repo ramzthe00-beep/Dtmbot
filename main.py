@@ -91,7 +91,7 @@ class TrueTradePublicData:
             return None
 
 # =====================================================================================
-# کلاس صرافی خصوصی (برای ترید خودکار در صورت امکان)
+# کلاس صرافی خصوصی (برای ترید خودکار در صورت امکان) با دیباگ کامل
 # =====================================================================================
 class TrueTradePrivateExchange:
     def __init__(self, api_key, api_secret, base_url):
@@ -100,6 +100,7 @@ class TrueTradePrivateExchange:
         self.base_url = base_url
         self.session = requests.Session()
         self.connected = False
+        self._last_debug_time = 0  # برای محدودیت ارسال دیباگ
 
     def _sign_request(self, method, uri, timestamp):
         # ✅ اصلاح شده: کوئری استرینگ حذف نمی‌شود (مطابق مستندات)
@@ -111,7 +112,50 @@ class TrueTradePrivateExchange:
         ).hexdigest()
         return signature
 
-    def _request(self, method, uri, data=None):
+    def _send_debug_to_telegram(self, method, uri, headers, data, response, symbol="N/A"):
+        """ارسال دیباگ کامل به تلگرام با محدودیت ۱ ساعت"""
+        current_time = time.time()
+        
+        # اگر آخرین ارسال بیش از ۱ ساعت گذشته باشد
+        if (current_time - self._last_debug_time) >= 3600:
+            self._last_debug_time = current_time
+            try:
+                iran_time = format_iran_time()
+                
+                # ساخت پیام دیباگ
+                message = (
+                    f"🐞 **گزارش دیباگ - خطای صرافی**\n"
+                    f"🕒 **زمان ایران:** {iran_time}\n"
+                    f"━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                    f"🔹 **نماد:** {symbol}\n"
+                    f"🔸 **متد:** {method}\n"
+                    f"🔹 **آدرس:** {uri}\n"
+                    f"━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                    f"📤 **هدرهای ارسالی:**\n"
+                    f"`{json.dumps(headers, indent=2)}`\n"
+                )
+                
+                # اگر بدنه وجود داشت، اضافه کن
+                if data:
+                    message += f"📦 **بدنه ارسالی:**\n`{json.dumps(data, indent=2)}`\n"
+                
+                message += (
+                    f"━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                    f"📥 **پاسخ دریافتی:**\n"
+                    f"**کد وضعیت:** {response.status_code}\n"
+                    f"**بدنه پاسخ:**\n"
+                    f"`{response.text[:800]}`\n"
+                    f"━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                    f"📌 **علت احتمالی:** خطای احراز هویت یا دسترسی.\n"
+                    f"💡 **توصیه:** لاگ‌های Railway را برای جزئیات بیشتر بررسی کنید."
+                )
+                
+                send_telegram_message(message)
+                print(f"[DEBUG] گزارش دیباگ به تلگرام ارسال شد (ساعت {iran_time})")
+            except Exception as e:
+                print(f"[DEBUG REPORT ERROR] {e}")
+
+    def _request(self, method, uri, data=None, symbol="N/A"):
         timestamp = str(int(time.time() * 1000))
         signature = self._sign_request(method, uri, timestamp)
 
@@ -123,9 +167,27 @@ class TrueTradePrivateExchange:
         }
 
         url = f"{self.base_url}{uri}"
+        
+        # چاپ کامل درخواست در لاگ
+        print(f"\n[DEBUG REQUEST] {symbol}")
+        print(f"Method: {method}")
+        print(f"URL: {url}")
+        print(f"Headers: {headers}")
+        if data:
+            print(f"Body: {json.dumps(data, indent=2)}")
+        print(f"Signature Payload: {timestamp}{method.upper()}{uri}")
+        
         response = self.session.request(method, url, headers=headers, json=data, timeout=15)
         
-        # ✅ لاگ کامل خطا برای دیباگ
+        # چاپ کامل پاسخ در لاگ
+        print(f"\n[DEBUG RESPONSE] {symbol}")
+        print(f"Status: {response.status_code}")
+        try:
+            print(f"Body: {json.dumps(response.json(), indent=2)}")
+        except:
+            print(f"Body: {response.text}")
+        print("-" * 50)
+        
         if not response.ok:
             error_msg = f"\n[PRIVATE EXCHANGE ERROR] Status: {response.status_code}"
             try:
@@ -135,6 +197,9 @@ class TrueTradePrivateExchange:
                 error_msg += f"\nResponse Body: {response.text}"
             print(error_msg)
             
+            # ✅ ارسال دیباگ به تلگرام (با محدودیت ۱ ساعت)
+            self._send_debug_to_telegram(method, uri, headers, data, response, symbol)
+            
             if response.status_code in [401, 403]:
                 self.connected = False
             response.raise_for_status()
@@ -142,19 +207,19 @@ class TrueTradePrivateExchange:
             self.connected = True
         return response.json()
 
-    def test_connection(self):
+    def test_connection(self, symbol="N/A"):
         """تست اتصال به صرافی با دریافت پوزیشن‌ها"""
         try:
-            self._request('GET', '/futures/positions')
+            self._request('GET', '/futures/positions', symbol=symbol)
             self.connected = True
             return True
         except:
             self.connected = False
             return False
 
-    def fetch_positions(self):
+    def fetch_positions(self, symbol="N/A"):
         try:
-            data = self._request('GET', '/futures/positions')
+            data = self._request('GET', '/futures/positions', symbol=symbol)
             positions = []
             if isinstance(data, list):
                 for pos in data:
@@ -199,7 +264,7 @@ class TrueTradePrivateExchange:
                 order_data["takeProfit"] = str(params['takeProfit'])
         
         uri = "/futures/positions"
-        result = self._request('POST', uri, order_data)
+        result = self._request('POST', uri, order_data, symbol=symbol)
         
         return {
             'id': result.get('positionId'),
@@ -211,10 +276,10 @@ class TrueTradePrivateExchange:
             'status': 'closed' if result.get('positionId') else 'open'
         }
 
-    def fetch_balance(self):
+    def fetch_balance(self, symbol="N/A"):
         try:
             uri = "/accounting/assets"
-            data = self._request('GET', uri)
+            data = self._request('GET', uri, symbol=symbol)
             if isinstance(data, list):
                 for asset in data:
                     if asset.get('asset') == 'USDT' and asset.get('accountType') == 'futures':
@@ -836,7 +901,7 @@ def analyze_and_execute():
                 # تلاش برای ترید خودکار
                 try:
                     # تست اتصال به صرافی
-                    if private_exchange.test_connection():
+                    if private_exchange.test_connection(symbol):
                         print(f"[EXCHANGE] اتصال به صرافی برقرار است. تلاش برای ثبت معامله...")
                         
                         # محاسبه حجم و اهرم
