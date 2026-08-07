@@ -3,7 +3,7 @@
 DTM Divergence Auto-Trading Bot - TheTrueTrade (نسخه هیبریدی)
 ====================================================================
 ربات معاملاتی هیبریدی با حافظه ۱۰۰ Pivot، سیستم امتیازدهی ۳ سطحی و Diagnostic کامل
-نسخه اصلاح شده - رفع باگ fatal در تشخیص Pivot + لاگ هوشمند + logging
+نسخه اصلاح شده نهایی - رفع باگ fatal + lookback + logging + لاگ اجباری ۵ بار اول
 """
 
 import os
@@ -637,7 +637,7 @@ def update_trade_result(symbol, signal_time, result, price):
     save_history(history)
 
 # =====================================================================================
-# تابع تشخیص سیگنال - نسخه اصلاح شده با لاگ هوشمند
+# تابع تشخیص سیگنال - نسخه نهایی با لاگ اجباری ۵ بار اول
 # =====================================================================================
 def detect_signal(df, state, symbol, debug=False):
     """تشخیص سیگنال با لاگ کامل و سیستم امتیازدهی ۳ سطحی"""
@@ -730,42 +730,51 @@ def detect_signal(df, state, symbol, debug=False):
     log(f"   Pivots: new_high={len(new_pivots_high)}, new_low={len(new_pivots_low)}")
     log(f"   Memory: total_high={len(state.pivot_highs)}, total_low={len(state.pivot_lows)}")
     
-    # ⚡ ارسال لاگ به تلگرام با زمان‌بندی هوشمند
+    # ⚡ ارسال لاگ به تلگرام با زمان‌بندی هوشمند (اصلاً اجباری در ۵ بار اول)
     current_time = time.time()
     should_send_log = False
     
-    # ۵ بار اول: هر ۵ دقیقه
+    # ۵ بار اول: هر ۵ دقیقه (حتماً ارسال بشه، حتی اگه Pivot جدید نباشه)
     if state.telegram_log_count < 5:
         if current_time - state.last_telegram_log_time >= 300:  # ۵ دقیقه
             should_send_log = True
-    # بعد از ۵ بار: هر ۶ ساعت
+            state.last_telegram_log_time = current_time
+            state.telegram_log_count += 1
+    # بعد از ۵ بار: هر ۶ ساعت (فقط اگه Pivot جدید باشه)
     else:
-        if current_time - state.last_telegram_log_time >= 21600:  # ۶ ساعت
-            should_send_log = True
+        if len(new_pivots_high) > 0 or len(new_pivots_low) > 0:
+            if current_time - state.last_telegram_log_time >= 21600:  # ۶ ساعت
+                should_send_log = True
+                state.last_telegram_log_time = current_time
+                state.telegram_log_count += 1
     
     if should_send_log:
-        state.last_telegram_log_time = current_time
-        state.telegram_log_count += 1
-        
         try:
             telegram_debug = "\n".join(debug_log)
-            # فقط اگر Pivot جدید پیدا شده یا اتفاق خاصی افتاده
-            if len(new_pivots_high) > 0 or len(new_pivots_low) > 0:
+            # ۵ بار اول: همیشه ارسال کن
+            if state.telegram_log_count <= 5:
                 log_type = "🟢" if state.telegram_log_count <= 5 else "🔵"
-                send_telegram_message(
-                    f"{log_type} **Debug Log #{state.telegram_log_count} - {symbol}**\n"
-                    f"🕒 {format_iran_time()}\n"
-                    f"```\n{telegram_debug[:1500]}\n```"
-                )
-            else:
-                # اگر Pivot جدید نیست، فقط یک پیام کوتاه (۵ بار اول)
-                if state.telegram_log_count <= 5:
+                if len(new_pivots_high) > 0 or len(new_pivots_low) > 0:
+                    send_telegram_message(
+                        f"{log_type} **Debug Log #{state.telegram_log_count} - {symbol}**\n"
+                        f"🕒 {format_iran_time()}\n"
+                        f"```\n{telegram_debug[:1500]}\n```"
+                    )
+                else:
                     send_telegram_message(
                         f"ℹ️ **Status #{state.telegram_log_count} - {symbol}**\n"
                         f"🕒 {format_iran_time()}\n"
                         f"📊 Pivots in memory: H={len(state.pivot_highs)}, L={len(state.pivot_lows)}\n"
-                        f"💤 No new pivots found in this cycle."
+                        f"💤 No new pivots found in this cycle.\n"
+                        f"   start={start_bar}, last_valid={last_valid_pivot_index}"
                     )
+            # بعد از ۵ بار: فقط اگه Pivot جدید باشه
+            else:
+                send_telegram_message(
+                    f"🔵 **Periodic Log #{state.telegram_log_count} - {symbol}**\n"
+                    f"🕒 {format_iran_time()}\n"
+                    f"```\n{telegram_debug[:1500]}\n```"
+                )
         except Exception as e:
             logger.error(f"[TELEGRAM LOG ERROR] {e}")
     
@@ -1286,9 +1295,10 @@ if __name__ == "__main__":
         "🤖 **ربات معاملاتی هیبریدی DTM (Hybrid Pro) راه‌اندازی شد!**\n"
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
         "📊 در حال دریافت داده و تحلیل بازار...\n"
-        "✅ **باگ fatal در تشخیص Pivot رفع شد**\n"
-        "✅ **سیستم logging فعال شد**\n"
-        "📡 **لاگ هوشمند:** ۵ بار اول هر ۵ دقیقه، سپس هر ۶ ساعت\n"
+        "✅ **باگ fatal رفع شد**\n"
+        "✅ **lookback برای Pivotهای تأیید شده**\n"
+        "✅ **لاگ اجباری ۵ بار اول هر ۵ دقیقه**\n"
+        "✅ **سیستم logging فعال**\n"
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
         "⚠️ **توجه:** در صورت عدم اتصال به صرافی، فقط سیگنال ارسال می‌شود."
     )
