@@ -670,7 +670,8 @@ def check_proximity(symbol, current_price, entry, stop, target):
 
 # =====================================================================================
 # پیگیری سیگنال‌های باز
-# =====================================================================================def track_open_signals():
+# =====================================================================================
+def track_open_signals():
     history = load_history()
     data = TrueTradePublicData()
     exchange = TrueTradePrivateExchange(API_KEY, API_SECRET, BASE_URL)
