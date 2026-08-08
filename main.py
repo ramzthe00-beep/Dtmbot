@@ -2,11 +2,12 @@
 """
 DTM Divergence Auto-Trading Bot - TheTrueTrade (نسخه هیبریدی)
 ====================================================================
-نسخه نهایی کامل:
+نسخه نهایی کامل - اصلاح فیلتر روند (فقط برای واگرایی کلاسیک)
 - رفع باگ ایندکس ناپایدار pivot با timestamp
 - رفع باگ side (BUY/SELL -> LONG/SHORT)
 - رفع باگ cost/size (تعداد قرارداد در فیلد size)
 - رفع باگ ترتیب ارسال لاگ تلگرام (بعد از تحلیل BUY/SELL)
+- فیلتر روند فقط برای Classic Divergence (مطابق Pine Script)
 - پیام‌های ترکیبی فارسی/انگلیسی
 - Startup Diagnostic
 - گزارش روزانه و ماهانه
@@ -579,18 +580,12 @@ def run_startup_diagnostic():
             diagnostic_log.append(f"🟢 Pivot High(5,3): {pivot_high.notna().sum()} عدد")
             diagnostic_log.append(f"🟢 Pivot Low(5,3): {pivot_low.notna().sum()} عدد")
             
-            trend_up = is_trending_up(df['close'], len(df['close'])-1, 20, 0.05)
             diagnostic_log.append(f"🟢 تشخیص روند: فعال")
     except Exception as e:
         diagnostic_log.append(f"🔴 خطا در محاسبات: {str(e)[:50]}")
     
     diagnostic_log.append("🟢 موتور امتیازدهی: آماده")
-    
-    # Telegram
-    try:
-        diagnostic_log.append("🟢 اتصال به تلگرام")
-    except:
-        diagnostic_log.append("🔴 اتصال به تلگرام")
+    diagnostic_log.append("🟢 اتصال به تلگرام")
     
     # Exchange
     exchange = TrueTradePrivateExchange(API_KEY, API_SECRET, BASE_URL)
@@ -611,7 +606,7 @@ def run_startup_diagnostic():
     logger.info("Startup Diagnostic Complete")
 
 # =====================================================================================
-# تابع تشخیص سیگنال
+# تابع تشخیص سیگنال - اصلاح شده (فیلتر روند فقط برای Classic)
 # =====================================================================================
 def detect_signal(df, state, symbol, debug=False):
     debug_log = []
@@ -699,22 +694,36 @@ def detect_signal(df, state, symbol, debug=False):
     buy_score = sell_score = 0
     buy_stop = buy_target = sell_stop = sell_target = None
     buy_details = sell_details = []
+    buy_signal_type = sell_signal_type = ""
 
-    # BUY
+    # =================================================================================
+    # BUY CHECK
+    # =================================================================================
     if len(state.pivot_lows) >= 2:
         pl_1, pl_2 = state.pivot_lows[-2], state.pivot_lows[-1]
         bar1 = resolve_bar_from_ts(closed_df_indexed, pl_1['ts'])
 
         if bar1 is not None:
-            if pl_2['price'] < pl_1['price'] or pl_2['price'] > pl_1['price']:
-                trend_ok = is_trending_down(close, bar1, 20, 0.05)
-                log(f"   🔵 BUY check: bar1={bar1}, trend={'✅' if trend_ok else '❌'}")
+            # تشخیص نوع واگرایی
+            is_classic_buy = pl_2['price'] < pl_1['price']   # P2 پایین‌تر از P1
+            is_hidden_buy = pl_2['price'] > pl_1['price']    # P2 بالاتر از P1
+
+            if is_classic_buy or is_hidden_buy:
+                
+                # ✅ فیلتر روند فقط برای Classic (مطابق Pine Script)
+                if is_classic_buy:
+                    trend_ok = is_trending_down(close, bar1, 20, 0.05)
+                    log(f"   🔵 Classic BUY check: bar1={bar1}, trend={'✅' if trend_ok else '❌'}")
+                else:  # Hidden - بدون فیلتر روند
+                    trend_ok = True
+                    log(f"   🔵 Hidden BUY check: bar1={bar1}, trend=⏭️ (skipped)")
 
                 if trend_ok:
                     score, details = calculate_divergence_score(pl_1, pl_2, "BUY", df, current_price)
                     buy_emoji, buy_label, buy_score, _ = classify_signal(score, details, "BUY")
                     buy_details = details
-                    log(f"   🔵 BUY score={score}/5 {'✅' if buy_emoji else '❌'}")
+                    buy_signal_type = "Classic" if is_classic_buy else "Hidden"
+                    log(f"   🔵 {buy_signal_type} BUY score={score}/5 {'✅' if buy_emoji else '❌'}")
                     if score >= 2:
                         for d in details:
                             log(f"      {d}")
@@ -730,21 +739,34 @@ def detect_signal(df, state, symbol, debug=False):
         else:
             log(f"   🔵 BUY: pl_1 ts not in current window")
 
-    # SELL
+    # =================================================================================
+    # SELL CHECK
+    # =================================================================================
     if len(state.pivot_highs) >= 2:
         ph_1, ph_2 = state.pivot_highs[-2], state.pivot_highs[-1]
         bar1 = resolve_bar_from_ts(closed_df_indexed, ph_1['ts'])
 
         if bar1 is not None:
-            if ph_2['price'] > ph_1['price'] or ph_2['price'] < ph_1['price']:
-                trend_ok = is_trending_up(close, bar1, 20, 0.05)
-                log(f"   🔴 SELL check: bar1={bar1}, trend={'✅' if trend_ok else '❌'}")
+            # تشخیص نوع واگرایی
+            is_classic_sell = ph_2['price'] > ph_1['price']  # P2 بالاتر از P1
+            is_hidden_sell = ph_2['price'] < ph_1['price']   # P2 پایین‌تر از P1
+
+            if is_classic_sell or is_hidden_sell:
+                
+                # ✅ فیلتر روند فقط برای Classic (مطابق Pine Script)
+                if is_classic_sell:
+                    trend_ok = is_trending_up(close, bar1, 20, 0.05)
+                    log(f"   🔴 Classic SELL check: bar1={bar1}, trend={'✅' if trend_ok else '❌'}")
+                else:  # Hidden - بدون فیلتر روند
+                    trend_ok = True
+                    log(f"   🔴 Hidden SELL check: bar1={bar1}, trend=⏭️ (skipped)")
 
                 if trend_ok:
                     score, details = calculate_divergence_score(ph_1, ph_2, "SELL", df, current_price)
                     sell_emoji, sell_label, sell_score, _ = classify_signal(score, details, "SELL")
                     sell_details = details
-                    log(f"   🔴 SELL score={score}/5 {'✅' if sell_emoji else '❌'}")
+                    sell_signal_type = "Classic" if is_classic_sell else "Hidden"
+                    log(f"   🔴 {sell_signal_type} SELL score={score}/5 {'✅' if sell_emoji else '❌'}")
                     if score >= 2:
                         for d in details:
                             log(f"      {d}")
@@ -790,10 +812,10 @@ def detect_signal(df, state, symbol, debug=False):
             logger.error(f"[TELEGRAM] {e}")
 
     if buy_signal:
-        return "BUY", entry_price, buy_stop, buy_target, early_signal, buy_emoji, buy_label, buy_score, buy_details
+        return "BUY", entry_price, buy_stop, buy_target, early_signal, buy_emoji, buy_label, buy_score, buy_details, buy_signal_type
     elif sell_signal:
-        return "SELL", entry_price, sell_stop, sell_target, early_signal, sell_emoji, sell_label, sell_score, sell_details
-    return None, None, None, None, early_signal, None, None, None, []
+        return "SELL", entry_price, sell_stop, sell_target, early_signal, sell_emoji, sell_label, sell_score, sell_details, sell_signal_type
+    return None, None, None, None, early_signal, None, None, None, [], ""
 
 # =====================================================================================
 # پیگیری سیگنال‌های باز
@@ -935,6 +957,7 @@ def analyze_and_execute():
             result = detect_signal(df, SYMBOL_STATES[symbol], symbol, debug=True)
             signal, entry, stop, target, early, emoji, label, score = result[:8]
             details = result[8] if len(result) > 8 else []
+            signal_type = result[9] if len(result) > 9 else ""
             cp = df['close'].iloc[-1]
 
             if early and not SYMBOL_STATES[symbol].alert_sent:
@@ -959,8 +982,10 @@ def analyze_and_execute():
                 if details:
                     details_text = "\n".join([f"{i+1}. {d}" for i, d in enumerate(details)])
                 
+                signal_label = f"{label} ({signal_type})" if signal_type else label
+                
                 send_telegram_message(
-                    f"{emoji} سیگنال {label} — {symbol}\n"
+                    f"{emoji} سیگنال {signal_label} — {symbol}\n"
                     f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
                     f"📊 امتیاز: {score}/5\n"
                     f"🔸 نوع: {direction_emoji} {direction_text}\n\n"
@@ -1066,6 +1091,8 @@ if __name__ == "__main__":
         "• Pivot: Left=5, Right=3\n"
         "• Memory: 100 Pivot\n"
         "• Scoring: 3-Level (🟢🟡⚪)\n"
+        "• Trend Filter: Classic only (مانند Pine Script)\n"
+        "• Hidden Divergence: بدون فیلتر روند\n"
         "• Symbols: LTCUSDT, DOGEUSDT, ETHUSDT\n"
         "• Min R/R: 2.0\n"
         "• Fixed Risk: 3.5 USDT\n"
@@ -1073,7 +1100,6 @@ if __name__ == "__main__":
         f"🕒 {format_iran_time()}"
     )
     
-    # اجرای Startup Diagnostic
     run_startup_diagnostic()
     
     threading.Thread(target=lambda: app.run(host="0.0.0.0", port=10000), daemon=True).start()
