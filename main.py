@@ -8,10 +8,11 @@ DTM Divergence Auto-Trading Bot - TheTrueTrade (نسخه هیبریدی)
 - رفع باگ cost/size (تعداد قرارداد در فیلد size)
 - رفع باگ ترتیب ارسال لاگ تلگرام (بعد از تحلیل BUY/SELL)
 - فیلتر روند فقط برای Classic Divergence (مطابق Pine Script)
+- نمایش کامل خطای 400 برای دیباگ
+- پیام نزدیکی فقط در آستانه‌های 5%، 3%، 1%، 0.5%
 - پیام‌های ترکیبی فارسی/انگلیسی
 - Startup Diagnostic
 - گزارش روزانه و ماهانه
-- هشدار نزدیکی به تارگت/استاپ
 """
 
 import os
@@ -123,7 +124,17 @@ class TrueTradePrivateExchange:
         if not response.ok:
             if response.status_code in [401, 403]:
                 self.connected = False
-            logger.error(f"[EXCHANGE ERROR] {method} {uri} | Status: {response.status_code} | Body: {response.text[:300]}")
+            
+            # ✅ نمایش کامل خطا
+            try:
+                error_body = response.json()
+                logger.error(f"[EXCHANGE ERROR] {method} {uri}")
+                logger.error(f"  Status: {response.status_code}")
+                logger.error(f"  Request Data: {json.dumps(data, indent=2) if data else 'None'}")
+                logger.error(f"  Response: {json.dumps(error_body, indent=2)}")
+            except:
+                logger.error(f"[EXCHANGE ERROR] {method} {uri} | Status: {response.status_code} | Body: {response.text[:1000]}")
+            
             response.raise_for_status()
         else:
             self.connected = True
@@ -197,6 +208,16 @@ def format_iran_date(dt=None):
     if dt is None:
         dt = datetime.now(timezone(timedelta(hours=3, minutes=30)))
     return dt.strftime('%Y-%m-%d')
+
+# =====================================================================================
+# کلاس وضعیت هشدار نزدیکی
+# =====================================================================================
+class ProximityState:
+    def __init__(self):
+        self._last_target_alert = None
+        self._last_stop_alert = None
+
+_proximity_states = {}
 
 # =====================================================================================
 # توابع محاسباتی
@@ -319,7 +340,6 @@ def calculate_divergence_score(p1, p2, direction, df, current_price):
     score = 0
     details = []
 
-    # RSI
     if direction == "BUY":
         if p2['price'] < p1['price'] and p2['rsi'] > p1['rsi']:
             score += 1; details.append("✅ RSI Divergence (Classic)")
@@ -335,7 +355,6 @@ def calculate_divergence_score(p1, p2, direction, df, current_price):
         else:
             details.append("❌ RSI")
 
-    # MACD Line
     if direction == "BUY":
         if p2['price'] < p1['price'] and p2['macdline'] > p1['macdline']:
             score += 1; details.append("✅ MACD Line Divergence")
@@ -351,7 +370,6 @@ def calculate_divergence_score(p1, p2, direction, df, current_price):
         else:
             details.append("❌ MACD Line")
 
-    # Histogram
     hist_div = False
     if direction == "BUY":
         if p2['price'] < p1['price'] and p2['hist'] > p1['hist']:
@@ -372,7 +390,6 @@ def calculate_divergence_score(p1, p2, direction, df, current_price):
     else:
         details.append("❌ MACD Histogram")
 
-    # Fibonacci
     if len(df) > 20:
         h20, l20 = df['high'].iloc[-20:].max(), df['low'].iloc[-20:].min()
         if h20 != l20:
@@ -387,7 +404,6 @@ def calculate_divergence_score(p1, p2, direction, df, current_price):
     else:
         details.append("❌ Fibonacci")
 
-    # Price Action
     if len(df) >= 3:
         last, prev = df.iloc[-1], df.iloc[-2]
         avg_range = (df['high']-df['low']).rolling(10).mean().iloc[-1]
@@ -494,10 +510,8 @@ def send_daily_report():
 ⏳ باز: {open_trades}
 
 📊 نرخ موفقیت (بسته شده): {win_rate:.1f}%
-💪 وضعیت: {'عالی! 🚀' if wins > losses else 'نیاز به بررسی 📊'}
+💪 وضعیت: {'عالی! 🚀' if wins > losses else 'نیاز به بررسی 📊'}"""
 
-آخرین معاملات:"""
-    
     for i, trade in enumerate(today_trades[-5:], 1):
         result_emoji = "✅" if trade.get('result') == 'TAKE_PROFIT' else "❌" if trade.get('result') == 'STOP_LOSS' else "⏳"
         direction = "LONG" if trade.get('direction') == 'BUY' else "SHORT"
@@ -541,53 +555,43 @@ def run_startup_diagnostic():
     logger.info("Running Startup Diagnostic...")
     
     diagnostic_log = []
-    
     diagnostic_log.append("🔍 بررسی سلامت سیستم")
     diagnostic_log.append("━━━━━━━━━━━━━━━━━━━━━━")
     
-    # Internet
     try:
         requests.get("https://www.google.com", timeout=5)
         diagnostic_log.append("🟢 اتصال اینترنت")
     except:
         diagnostic_log.append("🔴 اتصال اینترنت")
     
-    # Public API
     public_data = TrueTradePublicData()
     try:
         df = public_data.fetch_ohlcv("LTCUSDT", "1m", 500)
         if df is not None and not df.empty:
-            diagnostic_log.append(f"🟢 دریافت داده (API Public): {len(df)} کندل")
+            diagnostic_log.append(f"🟢 دریافت داده (API): {len(df)} کندل")
         else:
-            diagnostic_log.append("🔴 دریافت داده (API Public)")
+            diagnostic_log.append("🔴 دریافت داده")
     except Exception as e:
         diagnostic_log.append(f"🔴 دریافت داده: {str(e)[:50]}")
     
-    # Indicators
     try:
         if df is not None and not df.empty:
             rsi = calc_rsi(df['close'], 14)
             diagnostic_log.append(f"🟢 RSI(14): {rsi.iloc[-1]:.2f}")
-            
-            macd_line, _, _ = calc_macd(df['close'], 12, 26, 9)
-            diagnostic_log.append(f"🟢 MACD(12,26,9): فعال")
-            
+            diagnostic_log.append("🟢 MACD(12,26,9): فعال")
             atr = calc_atr(df['high'], df['low'], df['close'], 14)
             diagnostic_log.append(f"🟢 ATR(14): {atr.iloc[-1]:.4f}")
-            
-            pivot_high = find_pivot_high(df['high'], 5, 3)
-            pivot_low = find_pivot_low(df['low'], 5, 3)
-            diagnostic_log.append(f"🟢 Pivot High(5,3): {pivot_high.notna().sum()} عدد")
-            diagnostic_log.append(f"🟢 Pivot Low(5,3): {pivot_low.notna().sum()} عدد")
-            
-            diagnostic_log.append(f"🟢 تشخیص روند: فعال")
+            ph = find_pivot_high(df['high'], 5, 3)
+            pl = find_pivot_low(df['low'], 5, 3)
+            diagnostic_log.append(f"🟢 Pivot High(5,3): {ph.notna().sum()} عدد")
+            diagnostic_log.append(f"🟢 Pivot Low(5,3): {pl.notna().sum()} عدد")
+            diagnostic_log.append("🟢 تشخیص روند: فعال")
     except Exception as e:
         diagnostic_log.append(f"🔴 خطا در محاسبات: {str(e)[:50]}")
     
     diagnostic_log.append("🟢 موتور امتیازدهی: آماده")
     diagnostic_log.append("🟢 اتصال به تلگرام")
     
-    # Exchange
     exchange = TrueTradePrivateExchange(API_KEY, API_SECRET, BASE_URL)
     conn = exchange.test_connection()
     if conn:
@@ -606,7 +610,7 @@ def run_startup_diagnostic():
     logger.info("Startup Diagnostic Complete")
 
 # =====================================================================================
-# تابع تشخیص سیگنال - اصلاح شده (فیلتر روند فقط برای Classic)
+# تابع تشخیص سیگنال
 # =====================================================================================
 def detect_signal(df, state, symbol, debug=False):
     debug_log = []
@@ -623,7 +627,7 @@ def detect_signal(df, state, symbol, debug=False):
     n = len(closed_df)
     if n < 33:
         log(f"❌ داده ناکافی: {n}")
-        return None, None, None, None, False, None, None, None
+        return None, None, None, None, False, None, None, None, [], ""
 
     close = closed_df["close"]
     high = closed_df["high"]
@@ -696,25 +700,20 @@ def detect_signal(df, state, symbol, debug=False):
     buy_details = sell_details = []
     buy_signal_type = sell_signal_type = ""
 
-    # =================================================================================
-    # BUY CHECK
-    # =================================================================================
+    # BUY
     if len(state.pivot_lows) >= 2:
         pl_1, pl_2 = state.pivot_lows[-2], state.pivot_lows[-1]
         bar1 = resolve_bar_from_ts(closed_df_indexed, pl_1['ts'])
 
         if bar1 is not None:
-            # تشخیص نوع واگرایی
-            is_classic_buy = pl_2['price'] < pl_1['price']   # P2 پایین‌تر از P1
-            is_hidden_buy = pl_2['price'] > pl_1['price']    # P2 بالاتر از P1
+            is_classic_buy = pl_2['price'] < pl_1['price']
+            is_hidden_buy = pl_2['price'] > pl_1['price']
 
             if is_classic_buy or is_hidden_buy:
-                
-                # ✅ فیلتر روند فقط برای Classic (مطابق Pine Script)
                 if is_classic_buy:
                     trend_ok = is_trending_down(close, bar1, 20, 0.05)
                     log(f"   🔵 Classic BUY check: bar1={bar1}, trend={'✅' if trend_ok else '❌'}")
-                else:  # Hidden - بدون فیلتر روند
+                else:
                     trend_ok = True
                     log(f"   🔵 Hidden BUY check: bar1={bar1}, trend=⏭️ (skipped)")
 
@@ -739,25 +738,20 @@ def detect_signal(df, state, symbol, debug=False):
         else:
             log(f"   🔵 BUY: pl_1 ts not in current window")
 
-    # =================================================================================
-    # SELL CHECK
-    # =================================================================================
+    # SELL
     if len(state.pivot_highs) >= 2:
         ph_1, ph_2 = state.pivot_highs[-2], state.pivot_highs[-1]
         bar1 = resolve_bar_from_ts(closed_df_indexed, ph_1['ts'])
 
         if bar1 is not None:
-            # تشخیص نوع واگرایی
-            is_classic_sell = ph_2['price'] > ph_1['price']  # P2 بالاتر از P1
-            is_hidden_sell = ph_2['price'] < ph_1['price']   # P2 پایین‌تر از P1
+            is_classic_sell = ph_2['price'] > ph_1['price']
+            is_hidden_sell = ph_2['price'] < ph_1['price']
 
             if is_classic_sell or is_hidden_sell:
-                
-                # ✅ فیلتر روند فقط برای Classic (مطابق Pine Script)
                 if is_classic_sell:
                     trend_ok = is_trending_up(close, bar1, 20, 0.05)
                     log(f"   🔴 Classic SELL check: bar1={bar1}, trend={'✅' if trend_ok else '❌'}")
-                else:  # Hidden - بدون فیلتر روند
+                else:
                     trend_ok = True
                     log(f"   🔴 Hidden SELL check: bar1={bar1}, trend=⏭️ (skipped)")
 
@@ -785,7 +779,7 @@ def detect_signal(df, state, symbol, debug=False):
     if not buy_signal and not sell_signal:
         log(f"   ⚪ No signal")
 
-    # ⚡ ارسال لاگ به تلگرام (بعد از اتمام تحلیل BUY/SELL)
+    # ⚡ ارسال لاگ به تلگرام
     current_time = time.time()
     should_send = False
     if state.telegram_log_count < 10:
@@ -820,34 +814,46 @@ def detect_signal(df, state, symbol, debug=False):
 # =====================================================================================
 # پیگیری سیگنال‌های باز
 # =====================================================================================
-def check_proximity(symbol, current_price, entry, stop, target):
+def check_proximity(symbol, current_price, entry, stop, target, state):
     if entry is None or stop is None or target is None:
         return
     
     stop_distance = abs(current_price - stop) / entry * 100
     target_distance = abs(current_price - target) / entry * 100
     
-    if target_distance < 5 and target_distance > 0:
-        send_telegram_message(
-            f"🎯 نزدیک شدن به حد سود\n\n"
-            f"🔹 نماد: {symbol}\n"
-            f"💰 قیمت فعلی: {current_price:.4f}\n"
-            f"🎯 حد سود: {target:.4f}\n"
-            f"📊 فاصله: {target_distance:.2f}%\n\n"
-            f"⏳ در آستانه بسته شدن\n"
-            f"🕒 {format_iran_time()}"
-        )
+    thresholds = [5.0, 3.0, 1.0, 0.5]
     
-    elif stop_distance < 5 and stop_distance > 0:
-        send_telegram_message(
-            f"⚠️ نزدیک شدن به حد ضرر\n\n"
-            f"🔹 نماد: {symbol}\n"
-            f"💰 قیمت فعلی: {current_price:.4f}\n"
-            f"🛑 حد ضرر: {stop:.4f}\n"
-            f"📊 فاصله: {stop_distance:.2f}%\n\n"
-            f"⚠️ نیاز به پایش دقیق\n"
-            f"🕒 {format_iran_time()}"
-        )
+    if target_distance > 0:
+        for t in thresholds:
+            if target_distance <= t:
+                if not hasattr(state, '_last_target_alert') or state._last_target_alert is None or target_distance < t:
+                    send_telegram_message(
+                        f"🎯 نزدیک شدن به حد سود\n\n"
+                        f"🔹 نماد: {symbol}\n"
+                        f"💰 قیمت فعلی: {current_price:.4f}\n"
+                        f"🎯 حد سود: {target:.4f}\n"
+                        f"📊 فاصله: {target_distance:.2f}%\n\n"
+                        f"⏳ در آستانه بسته شدن\n"
+                        f"🕒 {format_iran_time()}"
+                    )
+                    state._last_target_alert = t
+                break
+    
+    if stop_distance > 0:
+        for t in thresholds:
+            if stop_distance <= t:
+                if not hasattr(state, '_last_stop_alert') or state._last_stop_alert is None or stop_distance < t:
+                    send_telegram_message(
+                        f"⚠️ نزدیک شدن به حد ضرر\n\n"
+                        f"🔹 نماد: {symbol}\n"
+                        f"💰 قیمت فعلی: {current_price:.4f}\n"
+                        f"🛑 حد ضرر: {stop:.4f}\n"
+                        f"📊 فاصله: {stop_distance:.2f}%\n\n"
+                        f"⚠️ نیاز به پایش دقیق\n"
+                        f"🕒 {format_iran_time()}"
+                    )
+                    state._last_stop_alert = t
+                break
 
 def track_open_signals():
     history = load_history()
@@ -860,7 +866,11 @@ def track_open_signals():
             cp = df['close'].iloc[-1]
             entry, stop, target = trade['entry_price'], trade['stop_loss'], trade['take_profit']
             
-            check_proximity(trade['symbol'], cp, entry, stop, target)
+            key = f"{trade['symbol']}_{trade['signal_time']}"
+            if key not in _proximity_states:
+                _proximity_states[key] = ProximityState()
+            
+            check_proximity(trade['symbol'], cp, entry, stop, target, _proximity_states[key])
             
             if trade['direction'] == 'BUY':
                 if cp >= target:
@@ -1031,11 +1041,19 @@ def analyze_and_execute():
                                 f"🕒 {format_iran_time()}"
                             )
                     except Exception as e:
+                        error_text = str(e)
+                        if hasattr(e, 'response') and e.response is not None:
+                            try:
+                                error_body = e.response.json()
+                                error_text += f"\n\n📥 پاسخ سرور:\n{json.dumps(error_body, indent=2)}"
+                            except:
+                                error_text += f"\n\n📥 پاسخ سرور:\n{e.response.text[:500]}"
+                        
                         send_telegram_message(
                             f"❌ خطا در ثبت سفارش\n\n"
                             f"🔹 نماد: {symbol}\n"
                             f"🔸 جهت: {side_map[signal]}\n"
-                            f"📝 علت: {str(e)[:200]}\n\n"
+                            f"📝 جزئیات خطا:\n{error_text[:600]}\n\n"
                             f"⚠️ نیاز به ورود دستی\n"
                             f"🕒 {format_iran_time()}"
                         )
@@ -1091,8 +1109,8 @@ if __name__ == "__main__":
         "• Pivot: Left=5, Right=3\n"
         "• Memory: 100 Pivot\n"
         "• Scoring: 3-Level (🟢🟡⚪)\n"
-        "• Trend Filter: Classic only (مانند Pine Script)\n"
-        "• Hidden Divergence: بدون فیلتر روند\n"
+        "• Trend Filter: Classic only\n"
+        "• Hidden: بدون فیلتر روند\n"
         "• Symbols: LTCUSDT, DOGEUSDT, ETHUSDT\n"
         "• Min R/R: 2.0\n"
         "• Fixed Risk: 3.5 USDT\n"
