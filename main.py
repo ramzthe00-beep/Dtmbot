@@ -14,6 +14,7 @@ DTM Divergence Auto-Trading Bot - TheTrueTrade (نسخه هیبریدی)
 - رفع فرمول فیبوناچی (بر اساس ابتدای روند واقعی)
 - رفع تکرار سیگنال: فقط وقتی پیوت دوم تازه شکل گرفته باشد
 - رفع فیلتر روند برای Hidden Divergence (بدون شرط روند)
+- لاگ کامل fetch_balance و create_order به تلگرام
 """
 
 import os
@@ -160,17 +161,50 @@ class TrueTradePrivateExchange:
             return False
 
     def fetch_balance(self):
+        """دریافت موجودی با لاگ کامل به تلگرام"""
         try:
-            data = self._request('GET', '/accounting/assets')
+            timestamp = str(int(time.time() * 1000))
+            signature = self._sign_request("GET", "/accounting/assets", timestamp)
+
+            response = self.session.get(
+                f"{self.base_url}/accounting/assets",
+                headers={
+                    "X-API-Key": self.api_key,
+                    "X-Timestamp": timestamp,
+                    "X-Signature": signature,
+                    "Content-Type": "application/json"
+                },
+                timeout=15
+            )
+
+            # لاگ کامل به تلگرام
+            send_telegram_message(
+                f"💰 FETCH BALANCE DEBUG\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"Status: {response.status_code}\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"📥 Response:\n```\n{response.text[:1000]}\n```\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"🕒 {format_iran_time()}"
+            )
+
+            response.raise_for_status()
+            data = response.json()
+
             if isinstance(data, list):
                 for asset in data:
                     if asset.get('asset') == 'USDT' and asset.get('accountType') == 'futures':
-                        return float(asset.get('balance', 0))
+                        balance = float(asset.get('balance', 0))
+                        logger.info(f"[BALANCE] {balance:.2f} USDT")
+                        return balance
             return 0
-        except:
+
+        except Exception as e:
+            logger.error(f"[BALANCE ERROR] {e}")
             return None
 
     def create_order(self, symbol, order_type, side, amount, price=None, params=None):
+        """ثبت سفارش با لاگ کامل به تلگرام"""
         order_data = {
             "symbol": symbol.upper(),
             "side": side.upper(),
@@ -189,14 +223,51 @@ class TrueTradePrivateExchange:
             if 'takeProfit' in params:
                 order_data["takeProfit"] = str(params['takeProfit'])
 
-        result = self._request('POST', '/futures/positions', order_data)
-        return {
-            'id': result.get('positionId'),
-            'symbol': symbol,
-            'side': side,
-            'type': order_type,
-            'amount': amount
-        }
+        # لاگ درخواست به تلگرام
+        send_telegram_message(
+            f"📤 CREATE ORDER REQUEST\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"🔹 Symbol: {symbol}\n"
+            f"🔸 Side: {side.upper()}\n"
+            f"🔸 Type: {order_type.upper()}\n"
+            f"📦 Size: {amount}\n"
+            f"📦 Body:\n```\n{json.dumps(order_data, indent=2)}\n```\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"🕒 {format_iran_time()}"
+        )
+
+        try:
+            result = self._request('POST', '/futures/positions', order_data)
+
+            # لاگ پاسخ به تلگرام
+            send_telegram_message(
+                f"📥 CREATE ORDER RESPONSE\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"🔹 Symbol: {symbol}\n"
+                f"✅ Success\n"
+                f"📦 Response:\n```\n{json.dumps(result, indent=2)[:500]}\n```\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"🕒 {format_iran_time()}"
+            )
+
+            return {
+                'id': result.get('positionId'),
+                'symbol': symbol,
+                'side': side,
+                'type': order_type,
+                'amount': amount
+            }
+        except Exception as e:
+            # لاگ خطا به تلگرام
+            send_telegram_message(
+                f"❌ CREATE ORDER ERROR\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"🔹 Symbol: {symbol}\n"
+                f"📝 Error: {str(e)[:500]}\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"🕒 {format_iran_time()}"
+            )
+            raise
 
 # =====================================================================================
 # توابع تلگرام
