@@ -14,7 +14,8 @@ DTM Divergence Auto-Trading Bot - TheTrueTrade (نسخه هیبریدی)
 - رفع فرمول فیبوناچی (بر اساس ابتدای روند واقعی)
 - رفع تکرار سیگنال: فقط وقتی پیوت دوم تازه شکل گرفته باشد
 - رفع فیلتر روند برای Hidden Divergence (بدون شرط روند)
-- لاگ کامل fetch_balance و create_order به تلگرام
+- fetch_balance از /futures/assets (طبق کتابچه API)
+- لاگ create_order فقط هنگام ثبت سفارش
 """
 
 import os
@@ -161,13 +162,16 @@ class TrueTradePrivateExchange:
             return False
 
     def fetch_balance(self):
-        """دریافت موجودی با لاگ کامل به تلگرام"""
+        """
+        دریافت موجودی حساب فیوچرز از /futures/assets
+        طبق کتابچه API: GET /futures/assets — No query parameters.
+        """
         try:
             timestamp = str(int(time.time() * 1000))
-            signature = self._sign_request("GET", "/accounting/assets", timestamp)
+            signature = self._sign_request("GET", "/futures/assets", timestamp)
 
             response = self.session.get(
-                f"{self.base_url}/accounting/assets",
+                f"{self.base_url}/futures/assets",
                 headers={
                     "X-API-Key": self.api_key,
                     "X-Timestamp": timestamp,
@@ -177,26 +181,23 @@ class TrueTradePrivateExchange:
                 timeout=15
             )
 
-            # لاگ کامل به تلگرام
-            send_telegram_message(
-                f"💰 FETCH BALANCE DEBUG\n"
-                f"━━━━━━━━━━━━━━━━━━━━━━\n"
-                f"Status: {response.status_code}\n"
-                f"━━━━━━━━━━━━━━━━━━━━━━\n"
-                f"📥 Response:\n```\n{response.text[:1000]}\n```\n"
-                f"━━━━━━━━━━━━━━━━━━━━━━\n"
-                f"🕒 {format_iran_time()}"
-            )
-
             response.raise_for_status()
             data = response.json()
 
+            # لاگ کامل پاسخ - فقط در logger
+            logger.info(f"[BALANCE] Response: {json.dumps(data)[:500]}")
+
             if isinstance(data, list):
                 for asset in data:
-                    if asset.get('asset') == 'USDT' and asset.get('accountType') == 'futures':
+                    if asset.get('asset') == 'USDT':
                         balance = float(asset.get('balance', 0))
-                        logger.info(f"[BALANCE] {balance:.2f} USDT")
+                        logger.info(f"[BALANCE] Futures USDT: {balance:.2f}")
                         return balance
+
+            # اگر لیست نبود یا USDT پیدا نشد
+            if isinstance(data, dict) and data.get('asset') == 'USDT':
+                return float(data.get('balance', 0))
+
             return 0
 
         except Exception as e:
@@ -204,7 +205,14 @@ class TrueTradePrivateExchange:
             return None
 
     def create_order(self, symbol, order_type, side, amount, price=None, params=None):
-        """ثبت سفارش با لاگ کامل به تلگرام"""
+        """
+        ثبت سفارش در صرافی.
+        طبق کتابچه API:
+        - side: LONG یا SHORT
+        - tradeType: MARKET یا LIMIT
+        - size: تعداد قرارداد (contract quantity)
+        - leverage: عدد صحیح در محدوده مجاز بازار
+        """
         order_data = {
             "symbol": symbol.upper(),
             "side": side.upper(),
@@ -223,14 +231,15 @@ class TrueTradePrivateExchange:
             if 'takeProfit' in params:
                 order_data["takeProfit"] = str(params['takeProfit'])
 
-        # لاگ درخواست به تلگرام
+        # لاگ کامل درخواست به تلگرام - فقط هنگام ثبت سفارش
         send_telegram_message(
-            f"📤 CREATE ORDER REQUEST\n"
+            f"📤 ثبت سفارش - درخواست\n"
             f"━━━━━━━━━━━━━━━━━━━━━━\n"
             f"🔹 Symbol: {symbol}\n"
             f"🔸 Side: {side.upper()}\n"
             f"🔸 Type: {order_type.upper()}\n"
             f"📦 Size: {amount}\n"
+            f"🔧 Leverage: {order_data['leverage']}\n"
             f"📦 Body:\n```\n{json.dumps(order_data, indent=2)}\n```\n"
             f"━━━━━━━━━━━━━━━━━━━━━━\n"
             f"🕒 {format_iran_time()}"
@@ -239,12 +248,12 @@ class TrueTradePrivateExchange:
         try:
             result = self._request('POST', '/futures/positions', order_data)
 
-            # لاگ پاسخ به تلگرام
+            # لاگ پاسخ موفق به تلگرام
             send_telegram_message(
-                f"📥 CREATE ORDER RESPONSE\n"
+                f"📥 ثبت سفارش - پاسخ\n"
                 f"━━━━━━━━━━━━━━━━━━━━━━\n"
                 f"🔹 Symbol: {symbol}\n"
-                f"✅ Success\n"
+                f"✅ Success - Position ID: {result.get('positionId', 'N/A')}\n"
                 f"📦 Response:\n```\n{json.dumps(result, indent=2)[:500]}\n```\n"
                 f"━━━━━━━━━━━━━━━━━━━━━━\n"
                 f"🕒 {format_iran_time()}"
@@ -257,12 +266,14 @@ class TrueTradePrivateExchange:
                 'type': order_type,
                 'amount': amount
             }
+
         except Exception as e:
             # لاگ خطا به تلگرام
             send_telegram_message(
-                f"❌ CREATE ORDER ERROR\n"
+                f"❌ ثبت سفارش - خطا\n"
                 f"━━━━━━━━━━━━━━━━━━━━━━\n"
                 f"🔹 Symbol: {symbol}\n"
+                f"🔸 Side: {side.upper()}\n"
                 f"📝 Error: {str(e)[:500]}\n"
                 f"━━━━━━━━━━━━━━━━━━━━━━\n"
                 f"🕒 {format_iran_time()}"
