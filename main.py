@@ -788,7 +788,7 @@ def detect_signal(df, state, symbol, debug=False):
     # ⚡ ارسال لاگ به تلگرام (بعد از اتمام تحلیل BUY/SELL)
     current_time = time.time()
     should_send = False
-    if state.telegram_log_count < 5:
+    if state.telegram_log_count < 10:
         if state.last_telegram_log_time == 0 or (current_time - state.last_telegram_log_time) >= 300:
             should_send = True
     else:
