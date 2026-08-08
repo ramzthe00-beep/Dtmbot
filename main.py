@@ -16,7 +16,8 @@ DTM Divergence Auto-Trading Bot - TheTrueTrade (نسخه هیبریدی)
 - رفع فیلتر روند برای Hidden Divergence (بدون شرط روند)
 - fetch_balance از /futures/assets (طبق کتابچه API)
 - لاگ create_order فقط هنگام ثبت سفارش
-- نمایش موجودی در پیام اتصال صرافی و ترید خودکار
+- نمایش موجودی در پیام اتصال صرافی
+- DEBUG /futures/assets برای عیب‌یابی
 """
 
 import os
@@ -185,7 +186,6 @@ class TrueTradePrivateExchange:
             response.raise_for_status()
             data = response.json()
 
-            # لاگ کامل پاسخ - فقط در logger
             logger.info(f"[BALANCE] Response: {json.dumps(data)[:500]}")
 
             if isinstance(data, list):
@@ -195,7 +195,6 @@ class TrueTradePrivateExchange:
                         logger.info(f"[BALANCE] Futures USDT: {balance:.2f}")
                         return balance
 
-            # اگر لیست نبود یا USDT پیدا نشد
             if isinstance(data, dict) and data.get('asset') == 'USDT':
                 return float(data.get('balance', 0))
 
@@ -433,10 +432,8 @@ def check_price_action(df, confirm_bar, direction, atr_val):
     upper_shadow = last['high'] - max(last['close'], last['open'])
     lower_shadow = min(last['close'], last['open']) - last['low']
 
-    # sizeOk: حداقل اندازه کندل نسبت به ATR
     size_ok = candle_range >= MIN_CANDLE_ATR_RATIO * atr_val
 
-    # avgBody: میانگین |close - open| در bigCandleAvgLen کندل
     start_idx = max(0, confirm_bar - BIG_CANDLE_AVG_LEN + 1)
     window = df.iloc[start_idx:confirm_bar + 1]
     avg_body = (window['close'] - window['open']).abs().mean()
@@ -447,12 +444,10 @@ def check_price_action(df, confirm_bar, direction, atr_val):
     pa_reasons = []
 
     if direction == "BUY":
-        # bullishWick
         bullish_wick = (candle_range > 0 and
                         lower_shadow >= SHADOW_TO_BODY_RATIO * candle_body and
                         (upper_shadow / candle_range) * 100 <= MAX_OPPOSITE_SHADOW_PCT and
                         size_ok)
-        # bigGreenCandle
         big_green = (last['close'] > last['open'] and
                      candle_body >= BIG_CANDLE_MULTIPLIER * avg_body and
                      size_ok)
@@ -464,18 +459,15 @@ def check_price_action(df, confirm_bar, direction, atr_val):
             pa = True
             pa_reasons.append("Big Green Candle")
 
-    else:  # SELL
-        # bearishWick (Shooting Star)
+    else:
         bearish_wick = (candle_range > 0 and
                         upper_shadow >= SHADOW_TO_BODY_RATIO * candle_body and
                         (lower_shadow / candle_range) * 100 <= MAX_OPPOSITE_SHADOW_PCT and
                         size_ok)
-        # bearishHangingMan
         bearish_hanging = (candle_range > 0 and
                            lower_shadow >= SHADOW_TO_BODY_RATIO * candle_body and
                            (upper_shadow / candle_range) * 100 <= MAX_OPPOSITE_SHADOW_PCT and
                            size_ok)
-        # bigRedCandle
         big_red = (last['close'] < last['open'] and
                    candle_body >= BIG_CANDLE_MULTIPLIER * avg_body and
                    size_ok)
@@ -509,7 +501,6 @@ def compute_stop_and_targets(pivot_highs, pivot_lows, direction, df_indexed, atr
 
         stop_price = min(pl_1['price'], pl_2['price']) - stop_buffer_pct * atr_val
         
-        # ✅ اصلاح Off-by-one: iloc[bar1+1:bar2+1] شامل bar2
         mid_peak = df_indexed["high"].iloc[bar1+1:bar2+1].max()
         if pd.isna(mid_peak):
             return None, None, None
@@ -528,7 +519,6 @@ def compute_stop_and_targets(pivot_highs, pivot_lows, direction, df_indexed, atr
 
         stop_price = max(ph_1['price'], ph_2['price']) + stop_buffer_pct * atr_val
         
-        # ✅ اصلاح Off-by-one: iloc[bar1+1:bar2+1] شامل bar2
         mid_trough = df_indexed["low"].iloc[bar1+1:bar2+1].min()
         if pd.isna(mid_trough):
             return None, None, None
@@ -620,7 +610,7 @@ def calculate_divergence_score(p1, p2, direction, bar1, bar2, hist_series, high_
     else:
         details.append("❌ Fibonacci")
 
-    # ✅ Price Action روی کندل تأیید (bar2 + RIGHT_BARS)
+    # Price Action روی کندل تأیید (bar2 + RIGHT_BARS)
     confirm_bar2 = bar2 + RIGHT_BARS
     if confirm_bar2 < len(df_indexed):
         pa_ok, pa_reasons = check_price_action(
@@ -1101,6 +1091,33 @@ def analyze_and_execute():
     logger.info("[ANALYZE] شروع...")
     exchange = TrueTradePrivateExchange(API_KEY, API_SECRET, BASE_URL)
     conn = exchange.test_connection()
+
+    # ✅ DEBUG: لاگ پاسخ /futures/assets برای عیب‌یابی
+    if conn:
+        try:
+            timestamp = str(int(time.time() * 1000))
+            signature = exchange._sign_request("GET", "/futures/assets", timestamp)
+            response = exchange.session.get(
+                f"{BASE_URL}/futures/assets",
+                headers={
+                    "X-API-Key": API_KEY,
+                    "X-Timestamp": timestamp,
+                    "X-Signature": signature,
+                    "Content-Type": "application/json"
+                },
+                timeout=15
+            )
+            send_telegram_message(
+                f"🔍 DEBUG /futures/assets\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"Status: {response.status_code}\n"
+                f"📥 Response:\n```\n{response.text[:1500]}\n```\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"🕒 {format_iran_time()}"
+            )
+        except Exception as e:
+            send_telegram_message(f"🔍 DEBUG ERROR: {str(e)[:300]}")
+
     balance = exchange.fetch_balance() if conn else 0
     if balance is None:
         balance = 0
