@@ -64,24 +64,24 @@ HISTORY_FILE = "trades_history_hybrid.json"
 # هشتگ‌ها
 # =====================================================================================
 HASHTAGS = {
-    "startup": "#آنلاین",
-    "diagnostic": "#بررسی_سیستم",
-    "signal": "#سیگنال",
-    "log": "#لاگ",
-    "alert": "#آماده_باش",
-    "pivot": "#پیوت_جدید",
-    "target": "#تارگت_زد",
-    "stop": "#استاپ_خورد",
-    "daily": "#گزارش_روزانه",
-    "monthly": "#گزارش_ماهانه",
-    "proximity_target": "#نزدیک_تارگت",
-    "proximity_stop": "#نزدیک_استاپ",
-    "order_request": "#ثبت_سفارش",
-    "order_response": "#سفارش_موفق",
-    "order_error": "#خطای_سفارش",
-    "connection": "#اتصال",
-    "connection_change": "#تغییر_اتصال",
-    "capital_reduced": "#کاهش_سرمایه",
+    "startup": "#Online",
+    "diagnostic": "#Diagnostic",
+    "signal": "#Signal",
+    "log": "#Log",
+    "alert": "#Alert",
+    "pivot": "#Pivot",
+    "target": "#Target",
+    "stop": "#Stop",
+    "daily": "#Daily",
+    "monthly": "#Monthly",
+    "proximity_target": "#NearTP",
+    "proximity_stop": "#NearSL",
+    "order_request": "#OrderReq",
+    "order_response": "#OrderOK",
+    "order_error": "#OrderErr",
+    "connection": "#Connected",
+    "connection_change": "#Reconnected",
+    "capital_reduced": "#LowCapital",
 }
 
 # =====================================================================================
@@ -1237,7 +1237,8 @@ def analyze_and_execute():
 
                 # شماره سیگنال
                 signal_number = get_next_signal_number()
-                signal_hashtag = f"#سیگنال_{signal_number}"
+                signal_hashtag = f"#Signal_{signal_number}"
+                
 
                 TARGET_RISK = 3.5
                 leverage = leverage_map.get(symbol, 50)
