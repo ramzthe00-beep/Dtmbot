@@ -16,6 +16,7 @@ DTM Divergence Auto-Trading Bot - TheTrueTrade (نسخه هیبریدی)
 - رفع فیلتر روند برای Hidden Divergence (بدون شرط روند)
 - fetch_balance از /futures/assets (طبق کتابچه API)
 - لاگ create_order فقط هنگام ثبت سفارش
+- نمایش موجودی در پیام اتصال صرافی و ترید خودکار
 """
 
 import os
@@ -1106,13 +1107,14 @@ def analyze_and_execute():
 
     if not hasattr(analyze_and_execute, "_last_status"):
         analyze_and_execute._last_status = conn
-        status_text = "✅ متصل — ترید خودکار فعال است" if conn else "⚠️ قطع"
-        balance_text = f"\n💰 موجودی: {balance:.2f} USDT" if balance else ""
-        send_telegram_message(f"📡 وضعیت صرافی\n\n{status_text}{balance_text}\n🕒 {format_iran_time()}")
+        status_text = "✅ متصل — ترید خودکار فعال است" if conn else "⚠️ قطع — ترید خودکار غیرفعال است"
+        balance_text = f"\n💰 موجودی حساب فیوچرز: {balance:.2f} USDT" if balance else "\n💰 موجودی: نامشخص"
+        send_telegram_message(f"📡 وضعیت اتصال به صرافی\n\n{status_text}{balance_text}\n🕒 {format_iran_time()}")
     elif analyze_and_execute._last_status != conn:
         analyze_and_execute._last_status = conn
-        status_text = "✅ متصل شد" if conn else "⚠️ قطع شد"
-        send_telegram_message(f"🔄 تغییر وضعیت: {status_text}\n🕒 {format_iran_time()}")
+        status_text = "✅ متصل — ترید خودکار فعال شد" if conn else "⚠️ قطع — ترید خودکار متوقف شد"
+        balance_text = f"\n💰 موجودی حساب فیوچرز: {balance:.2f} USDT" if balance else ""
+        send_telegram_message(f"🔄 تغییر وضعیت صرافی\n\n{status_text}{balance_text}\n🕒 {format_iran_time()}")
 
     data = TrueTradePublicData()
     track_open_signals()
