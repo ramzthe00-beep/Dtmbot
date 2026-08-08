@@ -15,11 +15,10 @@ DTM Divergence Auto-Trading Bot - TheTrueTrade (نسخه هیبریدی)
 - رفع تکرار سیگنال: فقط وقتی پیوت دوم تازه شکل گرفته باشد
 - رفع فیلتر روند برای Hidden Divergence (بدون شرط روند)
 - fetch_balance از /futures/assets با ساختار صحیح پاسخ
-- لاگ create_order فقط هنگام ثبت سفارش
+- رند کردن size، stopLoss و takeProfit با Tick Size هر ارز
 - نمایش موجودی در پیام اتصال صرافی
-- Tick Size و Price Precision برای همه ارزها
 - هشتگ‌گذاری همه پیام‌های تلگرام
-- شماره‌گذاری سیگنال‌ها (Signal #1, #2, ...)
+- شماره‌گذاری سیگنال‌ها
 """
 
 import os
@@ -60,6 +59,7 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "8514469828:AAFC76EiVA7I4TF
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "7402770612")
 
 HISTORY_FILE = "trades_history_hybrid.json"
+
 # =====================================================================================
 # هشتگ‌ها
 # =====================================================================================
@@ -266,12 +266,15 @@ class TrueTradePrivateExchange:
             if 'takeProfit' in params:
                 params['takeProfit'] = round_price(params['takeProfit'], symbol)
 
+        # رند کردن size با Tick Size
+        rounded_size = round_size(amount, symbol)
+
         order_data = {
             "symbol": symbol.upper(),
             "side": side.upper(),
             "tradeType": order_type.upper(),
             "leverage": params.get('leverage', 1) if params else 1,
-            "size": str(amount),
+            "size": str(rounded_size),
             "walletType": "debit"
         }
 
@@ -291,7 +294,7 @@ class TrueTradePrivateExchange:
             f"🔹 Symbol: {symbol}\n"
             f"🔸 Side: {side.upper()}\n"
             f"🔸 Type: {order_type.upper()}\n"
-            f"📦 Size: {amount}\n"
+            f"📦 Size: {rounded_size}\n"
             f"🔧 Leverage: {order_data['leverage']}\n"
             f"📦 Body:\n```\n{json.dumps(order_data, indent=2)}\n```\n"
             f"━━━━━━━━━━━━━━━━━━━━━━\n"
@@ -317,7 +320,7 @@ class TrueTradePrivateExchange:
                 'symbol': symbol,
                 'side': side,
                 'type': order_type,
-                'amount': amount
+                'amount': rounded_size
             }
 
         except Exception as e:
@@ -593,6 +596,13 @@ def round_price(price, symbol):
     tick = TICK_SIZES.get(symbol.upper(), 0.01)
     precision = PRICE_PRECISION.get(symbol.upper(), 2)
     rounded = round(price / tick) * tick
+    return round(rounded, precision)
+
+def round_size(size, symbol):
+    """رند کردن حجم معامله با Tick Size هر ارز"""
+    tick = TICK_SIZES.get(symbol.upper(), 0.01)
+    precision = PRICE_PRECISION.get(symbol.upper(), 2)
+    rounded = round(size / tick) * tick
     return round(rounded, precision)
 
 # =====================================================================================
@@ -1227,7 +1237,7 @@ def analyze_and_execute():
 
                 # شماره سیگنال
                 signal_number = get_next_signal_number()
-                signal_hashtag = f"#Signal_{signal_number}"
+                signal_hashtag = f"#سیگنال_{signal_number}"
 
                 TARGET_RISK = 3.5
                 leverage = leverage_map.get(symbol, 50)
