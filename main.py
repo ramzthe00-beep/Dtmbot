@@ -14,10 +14,9 @@ DTM Divergence Auto-Trading Bot - TheTrueTrade (نسخه هیبریدی)
 - رفع فرمول فیبوناچی (بر اساس ابتدای روند واقعی)
 - رفع تکرار سیگنال: فقط وقتی پیوت دوم تازه شکل گرفته باشد
 - رفع فیلتر روند برای Hidden Divergence (بدون شرط روند)
-- fetch_balance از /futures/assets (طبق کتابچه API)
+- fetch_balance از /futures/assets با ساختار صحیح پاسخ
 - لاگ create_order فقط هنگام ثبت سفارش
 - نمایش موجودی در پیام اتصال صرافی
-- DEBUG /futures/assets برای عیب‌یابی
 """
 
 import os
@@ -167,6 +166,7 @@ class TrueTradePrivateExchange:
         """
         دریافت موجودی حساب فیوچرز از /futures/assets
         طبق کتابچه API: GET /futures/assets — No query parameters.
+        پاسخ واقعی: {"summary": {...}, "assets": [{"symbol": "USDT", "availableBalance": "...", ...}]}
         """
         try:
             timestamp = str(int(time.time() * 1000))
@@ -188,15 +188,20 @@ class TrueTradePrivateExchange:
 
             logger.info(f"[BALANCE] Response: {json.dumps(data)[:500]}")
 
-            if isinstance(data, list):
-                for asset in data:
-                    if asset.get('asset') == 'USDT':
-                        balance = float(asset.get('balance', 0))
-                        logger.info(f"[BALANCE] Futures USDT: {balance:.2f}")
-                        return balance
+            # /futures/assets یه دیکشنری با کلید "assets" برمیگردونه
+            assets_list = []
+            if isinstance(data, dict) and 'assets' in data:
+                assets_list = data['assets']
+            elif isinstance(data, list):
+                assets_list = data
 
-            if isinstance(data, dict) and data.get('asset') == 'USDT':
-                return float(data.get('balance', 0))
+            for asset in assets_list:
+                # فیلد "symbol" داره نه "asset"
+                if asset.get('symbol') == 'USDT':
+                    # استفاده از availableBalance (موجودی قابل استفاده)
+                    balance = float(asset.get('availableBalance', asset.get('totalAssets', 0)))
+                    logger.info(f"[BALANCE] Futures USDT: {balance:.2f}")
+                    return balance
 
             return 0
 
@@ -1091,33 +1096,6 @@ def analyze_and_execute():
     logger.info("[ANALYZE] شروع...")
     exchange = TrueTradePrivateExchange(API_KEY, API_SECRET, BASE_URL)
     conn = exchange.test_connection()
-
-    # ✅ DEBUG: لاگ پاسخ /futures/assets برای عیب‌یابی
-    if conn:
-        try:
-            timestamp = str(int(time.time() * 1000))
-            signature = exchange._sign_request("GET", "/futures/assets", timestamp)
-            response = exchange.session.get(
-                f"{BASE_URL}/futures/assets",
-                headers={
-                    "X-API-Key": API_KEY,
-                    "X-Timestamp": timestamp,
-                    "X-Signature": signature,
-                    "Content-Type": "application/json"
-                },
-                timeout=15
-            )
-            send_telegram_message(
-                f"🔍 DEBUG /futures/assets\n"
-                f"━━━━━━━━━━━━━━━━━━━━━━\n"
-                f"Status: {response.status_code}\n"
-                f"📥 Response:\n```\n{response.text[:1500]}\n```\n"
-                f"━━━━━━━━━━━━━━━━━━━━━━\n"
-                f"🕒 {format_iran_time()}"
-            )
-        except Exception as e:
-            send_telegram_message(f"🔍 DEBUG ERROR: {str(e)[:300]}")
-
     balance = exchange.fetch_balance() if conn else 0
     if balance is None:
         balance = 0
