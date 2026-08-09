@@ -2,7 +2,23 @@
 """
 DTM Divergence Auto-Trading Bot - TheTrueTrade (نسخه هیبریدی)
 ====================================================================
-نسخه نهایی کامل — منطق واگرایی مطابق دقیق با Pine Script
+نسخه نهایی کامل — منطق واگرایی مطابق دقیق با Pine Script:
+- Pivot: حالت سریع (5/3)
+- فیلتر MTF: استفاده نمی‌شود
+- کندل تأییدیه: روی کندل تأیید (bar2 + RIGHT_BARS)
+- رفع Off-by-one در mid_peak/mid_trough
+- رفع فرمول avg_body در Price Action
+- رفع باگ فرمول شیب روند (slope × lookback)
+- رفع باگ منطق تغییر رنگ MACD Histogram (بین دو پیوت)
+- رفع Gating: RSI + MACD Line + MACD Histogram هر سه اجباری
+- رفع فرمول فیبوناچی (بر اساس ابتدای روند واقعی)
+- رفع تکرار سیگنال: فقط وقتی پیوت دوم تازه شکل گرفته باشد
+- رفع فیلتر روند برای Hidden Divergence (بدون شرط روند)
+- fetch_balance از /futures/assets با ساختار صحیح پاسخ
+- استفاده از cost (مارجین) برای MARKET order طبق کتابچه API
+- نمایش موجودی در پیام اتصال صرافی
+- هشتگ‌گذاری همه پیام‌های تلگرام (فارسی برای خوانایی)
+- شماره‌گذاری سیگنال‌ها
 """
 
 import os
@@ -238,13 +254,14 @@ class TrueTradePrivateExchange:
             logger.error(f"[BALANCE ERROR] {e}")
             return None
 
-    def create_order(self, symbol, order_type, side, amount, price=None, params=None):
+    def create_order(self, symbol, order_type, side, capital, price=None, params=None):
         """
         ثبت سفارش در صرافی.
         طبق کتابچه API:
+        - MARKET order: باید cost (مارجین) فرستاده شود
         - side: LONG یا SHORT
         - tradeType: MARKET یا LIMIT
-        - size: تعداد قرارداد (contract quantity)
+        - cost: مقدار مارجین (collateral)
         - leverage: عدد صحیح در محدوده مجاز بازار
         """
         # رند کردن stopLoss و takeProfit با Tick Size
@@ -254,9 +271,6 @@ class TrueTradePrivateExchange:
             if 'takeProfit' in params:
                 params['takeProfit'] = round_price(params['takeProfit'], symbol)
 
-        # رند کردن size با Tick Size
-        rounded_size = round_size(amount, symbol)
-
         # Precision برای این ارز
         prec = PRICE_PRECISION.get(symbol.upper(), 2)
 
@@ -265,7 +279,7 @@ class TrueTradePrivateExchange:
             "side": side.upper(),
             "tradeType": order_type.upper(),
             "leverage": params.get('leverage', 1) if params else 1,
-            "size": f"{rounded_size:.{prec}f}",
+            "cost": f"{capital:.{prec}f}",
             "walletType": "debit"
         }
 
@@ -285,7 +299,7 @@ class TrueTradePrivateExchange:
             f"🔹 Symbol: {symbol}\n"
             f"🔸 Side: {side.upper()}\n"
             f"🔸 Type: {order_type.upper()}\n"
-            f"📦 Size: {rounded_size:.{prec}f}\n"
+            f"💰 Cost: {capital:.{prec}f}\n"
             f"🔧 Leverage: {order_data['leverage']}\n"
             f"📦 Body:\n```\n{json.dumps(order_data, indent=2)}\n```\n"
             f"━━━━━━━━━━━━━━━━━━━━━━\n"
@@ -311,7 +325,7 @@ class TrueTradePrivateExchange:
                 'symbol': symbol,
                 'side': side,
                 'type': order_type,
-                'amount': rounded_size
+                'capital': capital
             }
 
         except Exception as e:
@@ -624,13 +638,6 @@ def round_price(price, symbol):
     rounded = round(price / tick) * tick
     return round(rounded, precision)
 
-def round_size(size, symbol):
-    """رند کردن حجم معامله با Tick Size هر ارز"""
-    tick = TICK_SIZES.get(symbol.upper(), 0.01)
-    precision = PRICE_PRECISION.get(symbol.upper(), 2)
-    rounded = round(size / tick) * tick
-    return round(rounded, precision)
-
 # =====================================================================================
 # سیستم امتیازدهی — اصلاح: confirm_bar2 برای Price Action
 # =====================================================================================
@@ -769,8 +776,7 @@ SYMBOLS = ["LTCUSDT", "DOGEUSDT", "ETHUSDT"]
 SYMBOL_STATES = {s: SymbolState() for s in SYMBOLS}
 
 # =====================================================================================
-# مدیریت تاریخچه
-# =====================================================================================
+# مدیریت تاریخچه# =====================================================================================
 def load_history():
     if os.path.exists(HISTORY_FILE):
         try:
@@ -1147,7 +1153,7 @@ def check_proximity(symbol, current_price, entry, stop, target, direction, capit
         target_progress = (entry - current_price) / reward_dist
     if stop_distance <= 0.25 and stop_distance > 0:
         send_telegram_message(
-            f"⚠️ هشدار نزدیکی به حد ضرر (75%) #{signal_number} {HASHTAGS['proximity_stop']}\n\n"
+            f"⚠️ هشدار نزدیکی به حد ضرر (75%) {HASHTAGS['proximity_stop']} #سیگنال_{signal_number}\n\n"
             f"🔹 نماد: {symbol}\n💰 قیمت فعلی: {current_price:.4f}\n"
             f"🛑 حد ضرر: {stop:.4f}\n📊 فاصله: {stop_distance*100:.1f}%\n\n"
             f"⚠️ فقط ۲۵٪ باقی مانده\n🕒 {format_iran_time()}"
@@ -1155,7 +1161,7 @@ def check_proximity(symbol, current_price, entry, stop, target, direction, capit
     if target_progress >= 0.60 and target_progress < 1.0:
         unrealized_r = target_progress / (1 - target_progress) if target_progress < 1 else 999
         send_telegram_message(
-            f"🎯 هشدار نزدیکی به حد سود (R:R = 1.5) #{signal_number} {HASHTAGS['proximity_target']}\n\n"
+            f"🎯 هشدار نزدیکی به حد سود (R:R = 1.5) {HASHTAGS['proximity_target']} #سیگنال_{signal_number}\n\n"
             f"🔹 نماد: {symbol}\n💰 قیمت فعلی: {current_price:.4f}\n"
             f"🎯 حد سود: {target:.4f}\n📊 پیشرفت: {target_progress*100:.1f}%\n"
             f"⚖️ R:R فعلی: {unrealized_r:.1f}\n\n"
@@ -1186,23 +1192,23 @@ def track_open_signals():
                     profit_pct = (cp-entry)/entry*100
                     profit_usdt = capital * leverage * profit_pct / 100
                     update_trade_result(trade['symbol'], trade['signal_time'], 'TAKE_PROFIT', cp)
-                    send_telegram_message(f"🎯 حد سود فعال شد #{signal_number} {HASHTAGS['target']}\n\n🔹 {trade['symbol']} | LONG\n📍 {entry:.4f} → 🎯 {cp:.4f}\n📈 +{profit_pct:.2f}% | 💰 +{profit_usdt:.2f} USDT\n🕒 {format_iran_time()}")
+                    send_telegram_message(f"🎯 حد سود فعال شد {HASHTAGS['target']} #سیگنال_{signal_number}\n\n🔹 {trade['symbol']} | LONG\n📍 {entry:.4f} → 🎯 {cp:.4f}\n📈 +{profit_pct:.2f}% | 💰 +{profit_usdt:.2f} USDT\n🕒 {format_iran_time()}")
                 elif cp <= stop:
                     loss_pct = (cp-entry)/entry*100
                     loss_usdt = capital * leverage * abs(loss_pct) / 100
                     update_trade_result(trade['symbol'], trade['signal_time'], 'STOP_LOSS', cp)
-                    send_telegram_message(f"💔 حد ضرر فعال شد #{signal_number} {HASHTAGS['stop']}\n\n🔹 {trade['symbol']} | LONG\n📍 {entry:.4f} → 💔 {cp:.4f}\n📉 {loss_pct:.2f}% | 💰 {loss_usdt:.2f} USDT\n🕒 {format_iran_time()}")
+                    send_telegram_message(f"💔 حد ضرر فعال شد {HASHTAGS['stop']} #سیگنال_{signal_number}\n\n🔹 {trade['symbol']} | LONG\n📍 {entry:.4f} → 💔 {cp:.4f}\n📉 {loss_pct:.2f}% | 💰 {loss_usdt:.2f} USDT\n🕒 {format_iran_time()}")
             else:
                 if cp <= target:
                     profit_pct = (entry-cp)/entry*100
                     profit_usdt = capital * leverage * profit_pct / 100
                     update_trade_result(trade['symbol'], trade['signal_time'], 'TAKE_PROFIT', cp)
-                    send_telegram_message(f"🎯 حد سود فعال شد #{signal_number} {HASHTAGS['target']}\n\n🔹 {trade['symbol']} | SHORT\n📍 {entry:.4f} → 🎯 {cp:.4f}\n📈 +{profit_pct:.2f}% | 💰 +{profit_usdt:.2f} USDT\n🕒 {format_iran_time()}")
+                    send_telegram_message(f"🎯 حد سود فعال شد {HASHTAGS['target']} #سیگنال_{signal_number}\n\n🔹 {trade['symbol']} | SHORT\n📍 {entry:.4f} → 🎯 {cp:.4f}\n📈 +{profit_pct:.2f}% | 💰 +{profit_usdt:.2f} USDT\n🕒 {format_iran_time()}")
                 elif cp >= stop:
                     loss_pct = (entry-cp)/entry*100
                     loss_usdt = capital * leverage * abs(loss_pct) / 100
                     update_trade_result(trade['symbol'], trade['signal_time'], 'STOP_LOSS', cp)
-                    send_telegram_message(f"💔 حد ضرر فعال شد #{signal_number} {HASHTAGS['stop']}\n\n🔹 {trade['symbol']} | SHORT\n📍 {entry:.4f} → 💔 {cp:.4f}\n📉 {loss_pct:.2f}% | 💰 {loss_usdt:.2f} USDT\n🕒 {format_iran_time()}")
+                    send_telegram_message(f"💔 حد ضرر فعال شد {HASHTAGS['stop']} #سیگنال_{signal_number}\n\n🔹 {trade['symbol']} | SHORT\n📍 {entry:.4f} → 💔 {cp:.4f}\n📉 {loss_pct:.2f}% | 💰 {loss_usdt:.2f} USDT\n🕒 {format_iran_time()}")
 
 # =====================================================================================
 # تابع اصلی
@@ -1263,7 +1269,6 @@ def analyze_and_execute():
 
                 # شماره سیگنال
                 signal_number = get_next_signal_number()
-                signal_hashtag = f"#Signal_{signal_number}"
 
                 TARGET_RISK = 3.5
                 leverage = leverage_map.get(symbol, 50)
@@ -1290,7 +1295,7 @@ def analyze_and_execute():
                 potential_profit = capital * used_leverage * (profit_pct / 100)
 
                 signal_message = (
-                    f"{emoji} سیگنال #{signal_number} {label} — {symbol} {HASHTAGS['signal']} {signal_hashtag}\n"
+                    f"{emoji} سیگنال {label} — {symbol} {HASHTAGS['signal']} #سیگنال_{signal_number}\n"
                     f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
                     f"📊 امتیاز: {score}/5\n🔸 {direction_emoji} {direction_text}\n\n"
                     f"📍 ورود: {entry:.{PRICE_PRECISION.get(symbol, 2)}f}\n"
@@ -1315,12 +1320,11 @@ def analyze_and_execute():
 
                 if exchange.connected:
                     try:
-                        exchange.create_order(symbol, "market", side_map[signal], qty, None,
+                        exchange.create_order(symbol, "market", side_map[signal], capital, None,
                             {'leverage': int(used_leverage), 'stopLoss': stop, 'takeProfit': target})
                         order_message = (
-                            f"✅ سفارش ثبت شد #{signal_number} — {symbol} {HASHTAGS['signal']} {signal_hashtag}\n\n"
-                            f"🔸 {side_map[signal]} | 📦 {qty:.6f} | 🔧 {int(used_leverage)}x\n"
-                            f"💰 سرمایه: {capital:.2f} USDT\n"
+                            f"✅ سفارش ثبت شد — {symbol} {HASHTAGS['signal']} #سیگنال_{signal_number}\n\n"
+                            f"🔸 {side_map[signal]} | 💰 {capital:.2f} USDT | 🔧 {int(used_leverage)}x\n"
                         )
                         if capital_reduced:
                             order_message += (
@@ -1335,7 +1339,7 @@ def analyze_and_execute():
                         )
                         send_telegram_message(order_message)
                     except Exception as e:
-                        send_telegram_message(f"❌ خطا #{signal_number} — {symbol} {HASHTAGS['order_error']}\n{side_map[signal]}\n📝 {str(e)[:200]}\n🕒 {format_iran_time()}")
+                        send_telegram_message(f"❌ خطا — {symbol} {HASHTAGS['order_error']} #سیگنال_{signal_number}\n{side_map[signal]}\n📝 {str(e)[:200]}\n🕒 {format_iran_time()}")
                 SYMBOL_STATES[symbol].alert_sent = False
             else:
                 logger.info(f"[ANALYSIS] {symbol}: بدون سیگنال")
@@ -1385,7 +1389,7 @@ if __name__ == "__main__":
         f"⚙️ Pivot: 5/3 | R/R: 2.0 | Risk: 3.5 USDT\n"
         f"🔧 ETH=50x | LTC/DOGE=75x\n\n"
         f"📌 هشتگ‌های ثابت:\n{hashtag_list}\n\n"
-        f"📊 شمارنده سیگنال: از #{SIGNAL_COUNTER + 1} شروع می‌شود\n\n"
+        f"📊 شمارنده سیگنال: از #سیگنال_{SIGNAL_COUNTER + 1} شروع می‌شود\n\n"
         f"🕒 {format_iran_time()}"
     )
     run_startup_diagnostic()
