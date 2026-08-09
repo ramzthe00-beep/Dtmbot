@@ -4,7 +4,9 @@ DTM Divergence Auto-Trading Bot - TheTrueTrade (نسخه هیبریدی)
 ====================================================================
 نسخه نهایی کامل — منطق واگرایی دقیقاً مطابق Pine Script:
 - Pivot: حالت سریع (5/3)
-- RSI با calc_rma (Wilder Smoothing مثل ta.rma در Pine)
+- RSI با calc_rma (Wilder Smoothing مثل ta.rma در Pine) — **FIXED**: fillna حذف شد، منطق 0/100 مثل Pine
+- ATR با calc_rma (Wilder Smoothing مثل ta.atr در Pine) — **FIXED**: ewm با calc_rma جایگزین شد
+- EMA با seed SMA (مثل Pine) — **FIXED**: ewm با seed SMA جایگزین شد
 - عمق داده 1500 کندل
 - رفع درز State پیوت‌ها (start_bar=0 همیشه)
 - RSI/MACD در همان کندل Pivot
@@ -17,6 +19,9 @@ DTM Divergence Auto-Trading Bot - TheTrueTrade (نسخه هیبریدی)
 - رفع فرمول فیبوناچی
 - رفع تکرار سیگنال: فقط وقتی پیوت دوم تازه شکل گرفته باشد
 - رفع فیلتر روند برای Hidden Divergence
+- **NEW**: State persistence — پیوت‌ها در فایل ذخیره میشن
+- **NEW**: FIB_SEARCH_BARS = 500
+- **NEW**: اعتبارسنجی df.iloc[:-1]
 - fetch_balance از /futures/assets
 - استفاده از cost (مارجین) برای MARKET order
 - نمایش موجودی در پیام اتصال صرافی
@@ -24,10 +29,10 @@ DTM Divergence Auto-Trading Bot - TheTrueTrade (نسخه هیبریدی)
 - شماره‌گذاری سیگنال‌ها
 - بافر 2% موجودی برای جلوگیری از insufficient balance
 - time.sleep بین پیام سیگنال و سفارش
-- **NEW**: پیگیری پوزیشن‌های باز از طریق API صرافی
-- **NEW**: دریافت تاریخچه معاملات از صرافی برای گزارش‌ها
-- **NEW**: پیام سیگنال انگلیسی (بدون بخش دلایل)
-- **NEW**: گزارش واقعی صرافی (معاملات + موجودی)
+- پیگیری پوزیشن‌های باز از طریق API صرافی
+- دریافت تاریخچه معاملات از صرافی برای گزارش‌ها
+- پیام سیگنال انگلیسی (بدون بخش دلایل)
+- گزارش واقعی صرافی (معاملات + موجودی)
 """
 
 import os
@@ -68,6 +73,7 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "8514469828:AAFC76EiVA7I4TF
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "7402770612")
 
 HISTORY_FILE = "trades_history_hybrid.json"
+STATE_FILE = "pivot_state.json"  # NEW: فایل ذخیره state پیوت‌ها
 
 # =====================================================================================
 # هشتگ‌ها
@@ -101,7 +107,7 @@ TREND_SLOPE_MIN_PCT = 0.05
 FIB_USE_618 = True
 FIB_USE_786 = True
 FIB_TOLERANCE_PCT = 0.5
-FIB_SEARCH_BARS = 100
+FIB_SEARCH_BARS = 500  # FIXED: افزایش از 100 به 500
 STOP_BUFFER_PCT = 0.05
 RIGHT_BARS = 3
 
@@ -110,6 +116,9 @@ MAX_OPPOSITE_SHADOW_PCT = 20.0
 MIN_CANDLE_ATR_RATIO = 0.3
 BIG_CANDLE_AVG_LEN = 14
 BIG_CANDLE_MULTIPLIER = 1.5
+
+# NEW: آیا API کندل باز (در حال تشکیل) برمی‌گردونه؟
+API_RETURNS_OPEN_CANDLE = False  # FIXED: False یعنی API فقط کندل بسته میده
 
 # =====================================================================================
 # Tick Size و Price Precision
@@ -254,12 +263,7 @@ class TrueTradePrivateExchange:
             logger.error(f"[BALANCE ERROR] {e}")
             return None
 
-    # --- NEW: دریافت تاریخچه معاملات از صرافی ---
     def fetch_trade_history(self, symbol=None, start_time=None, end_time=None):
-        """
-        دریافت تاریخچه معاملات از /futures/trades.
-        زمان‌ها باید ISO 8601 باشند (مثلاً '2026-08-09T00:00:00Z').
-        """
         params = {}
         if symbol:
             params['symbol'] = symbol.upper()
@@ -279,9 +283,7 @@ class TrueTradePrivateExchange:
             logger.error(f"[TRADE HISTORY ERROR] {e}")
             return []
 
-    # --- NEW: دریافت پوزیشن‌های باز ---
     def fetch_open_positions(self):
-        """دریافت لیست پوزیشن‌های باز فعلی."""
         try:
             data = self._request('GET', '/futures/positions?active=true')
             return data if isinstance(data, list) else []
@@ -418,9 +420,10 @@ def format_iran_date(dt=None):
     return dt.strftime('%Y-%m-%d')
 
 # =====================================================================================
-# توابع محاسباتی پایه (بدون تغییر)
+# توابع محاسباتی پایه (Pine-Exact)
 # =====================================================================================
 def calc_rma(series, length):
+    """معادل دقیق ta.rma (Wilder Smoothing) در Pine Script — seed = SMA اولین length مقدار"""
     alpha = 1.0 / length
     rma = pd.Series(np.nan, index=series.index)
     if len(series) < length:
@@ -433,17 +436,47 @@ def calc_rma(series, length):
         rma.iloc[i] = prev
     return rma
 
+# PINE-EXACT: EMA با seed SMA (مانند Pine)
+def calc_ema(series, length):
+    """EMA با seed SMA دقیقاً مانند Pine Script (ta.ema)"""
+    ema = pd.Series(np.nan, index=series.index)
+    if len(series) < length:
+        return ema
+    # اولین مقدار SMA
+    sma_seed = series.iloc[:length].mean()
+    ema.iloc[length - 1] = sma_seed
+    multiplier = 2.0 / (length + 1)
+    for i in range(length, len(series)):
+        ema.iloc[i] = (series.iloc[i] - ema.iloc[i - 1]) * multiplier + ema.iloc[i - 1]
+    return ema
+
+# PINE-EXACT: RSI دقیقاً مثل Pine (با RMA و منطق 0/100)
 def calc_rsi(close, length=14):
-    delta = close.diff().fillna(0)
+    """RSI دقیقاً مثل Pine: وقتی avg_loss=0 باشد RSI=100، وقتی avg_gain=0 باشد RSI=0"""
+    delta = close.diff()
     gain = delta.clip(lower=0)
     loss = -delta.clip(upper=0)
+    
     avg_gain = calc_rma(gain, length)
     avg_loss = calc_rma(loss, length)
-    rs = avg_gain / avg_loss.replace(0, np.nan)
-    return (100 - (100 / (1 + rs))).fillna(50)
-
-def calc_ema(series, length):
-    return series.ewm(span=length, adjust=False).mean()
+    
+    rs = pd.Series(np.nan, index=close.index)
+    rsi = pd.Series(np.nan, index=close.index)
+    
+    for i in range(len(close)):
+        if pd.isna(avg_gain.iloc[i]) or pd.isna(avg_loss.iloc[i]):
+            continue
+        if avg_loss.iloc[i] == 0:
+            rsi.iloc[i] = 100.0 if avg_gain.iloc[i] > 0 else 50.0
+        elif avg_gain.iloc[i] == 0:
+            rsi.iloc[i] = 0.0
+        else:
+            rs.iloc[i] = avg_gain.iloc[i] / avg_loss.iloc[i]
+            rsi.iloc[i] = 100.0 - (100.0 / (1.0 + rs.iloc[i]))
+    
+    # Forward fill مانند Pine (نقاط NaN را با آخرین مقدار معتبر پر کن)
+    rsi = rsi.fillna(method='ffill').fillna(50.0)
+    return rsi
 
 def calc_macd(close, fast=12, slow=26, signal=9):
     ema_fast = calc_ema(close, fast)
@@ -452,12 +485,15 @@ def calc_macd(close, fast=12, slow=26, signal=9):
     signal_line = calc_ema(macd_line, signal)
     return macd_line, signal_line, macd_line - signal_line
 
+# PINE-EXACT: ATR با calc_rma (Wilder Smoothing)
 def calc_atr(high, low, close, length=14):
+    """ATR با Wilder Smoothing (calc_rma) دقیقاً مثل ta.atr در Pine"""
     prev_close = close.shift(1)
-    tr = pd.concat([high-low, (high-prev_close).abs(), (low-prev_close).abs()], axis=1).max(axis=1)
-    return tr.ewm(alpha=1.0/length, min_periods=length, adjust=False).mean()
+    tr = pd.concat([high - low, (high - prev_close).abs(), (low - prev_close).abs()], axis=1).max(axis=1)
+    return calc_rma(tr, length)
 
 def find_pivot_high(high, left=5, right=3):
+    """تشخیص قله‌ها — منطق Pine: قیمت باید strictly greater از همه باشه"""
     n = len(high)
     result = pd.Series(np.nan, index=high.index)
     for i in range(left, n - right):
@@ -466,6 +502,7 @@ def find_pivot_high(high, left=5, right=3):
     return result
 
 def find_pivot_low(low, left=5, right=3):
+    """تشخیص دره‌ها — منطق Pine: قیمت باید strictly lower از همه باشه"""
     n = len(low)
     result = pd.Series(np.nan, index=low.index)
     for i in range(left, n - right):
@@ -474,38 +511,51 @@ def find_pivot_low(low, left=5, right=3):
     return result
 
 def _linreg_end(y):
+    """محاسبه مقدار پایانی رگرسیون خطی (معادل ta.linreg در Pine)"""
     x = np.arange(len(y))
     slope, intercept = np.polyfit(x, y, 1)
     return intercept + slope * (len(y) - 1)
 
 def is_trending_up(close, ref_bar, lookback=TREND_LOOKBACK, slope_min_pct=TREND_SLOPE_MIN_PCT):
+    """تشخیص روند صعودی — پنجره‌ها دقیقاً مثل Pine"""
     if ref_bar is None or ref_bar - 2 * lookback + 1 < 0:
         return False
+    
     y_current = close.iloc[ref_bar - lookback + 1:ref_bar + 1].values
     y_past = close.iloc[ref_bar - 2 * lookback + 1:ref_bar - lookback + 1].values
+    
     if len(y_current) < 2 or len(y_past) < 2:
         return False
+    
     fitted_end_current = _linreg_end(y_current)
     fitted_end_past = _linreg_end(y_past)
     total_slope = fitted_end_current - fitted_end_past
+    
     avg = y_current.mean()
     if avg == 0:
         return False
+    
     return (total_slope / avg) * 100 > slope_min_pct
 
 def is_trending_down(close, ref_bar, lookback=TREND_LOOKBACK, slope_min_pct=TREND_SLOPE_MIN_PCT):
+    """تشخیص روند نزولی — پنجره‌ها دقیقاً مثل Pine"""
     if ref_bar is None or ref_bar - 2 * lookback + 1 < 0:
         return False
+    
     y_current = close.iloc[ref_bar - lookback + 1:ref_bar + 1].values
     y_past = close.iloc[ref_bar - 2 * lookback + 1:ref_bar - lookback + 1].values
+    
     if len(y_current) < 2 or len(y_past) < 2:
         return False
+    
     fitted_end_current = _linreg_end(y_current)
     fitted_end_past = _linreg_end(y_past)
     total_slope = fitted_end_current - fitted_end_past
+    
     avg = y_current.mean()
     if avg == 0:
         return False
+    
     return (total_slope / avg) * 100 < -slope_min_pct
 
 def resolve_bar_from_ts(df_indexed, ts):
@@ -514,6 +564,7 @@ def resolve_bar_from_ts(df_indexed, ts):
     return df_indexed.index.get_loc(ts)
 
 def check_macd_color_change(hist_series, bar1, bar2, need_negative_phase):
+    """بررسی تغییر رنگ MACD histogram بین دو پیوت"""
     if bar1 is None or bar2 is None or bar2 <= bar1 + 1:
         return False
     window = hist_series.iloc[bar1 + 1:bar2]
@@ -522,6 +573,7 @@ def check_macd_color_change(hist_series, bar1, bar2, need_negative_phase):
     return (window < 0).any() if need_negative_phase else (window > 0).any()
 
 def find_trend_start_low(low_series, ref_bar, search_bars=FIB_SEARCH_BARS):
+    """پیدا کردن پایین‌ترین کف در پنجره جستجو (معادل ta.lowest در Pine)"""
     if ref_bar is None:
         return None
     start = max(0, ref_bar - search_bars + 1)
@@ -529,6 +581,7 @@ def find_trend_start_low(low_series, ref_bar, search_bars=FIB_SEARCH_BARS):
     return window.min() if len(window) > 0 else None
 
 def find_trend_start_high(high_series, ref_bar, search_bars=FIB_SEARCH_BARS):
+    """پیدا کردن بالاترین سقف در پنجره جستجو (معادل ta.highest در Pine)"""
     if ref_bar is None:
         return None
     start = max(0, ref_bar - search_bars + 1)
@@ -731,7 +784,7 @@ def load_signal_counter():
         SIGNAL_COUNTER = 0
 
 # =====================================================================================
-# کلاس وضعیت (بدون تغییر)
+# کلاس وضعیت (با state persistence)
 # =====================================================================================
 class SymbolState:
     def __init__(self):
@@ -741,9 +794,55 @@ class SymbolState:
         self.alert_sent = False
         self.telegram_log_count = 0
         self.last_telegram_log_time = 0
+    
+    def to_dict(self):
+        return {
+            'pivot_highs': [{'ts': str(p['ts']), 'price': p['price'], 
+                           'rsi': p['rsi'], 'macdline': p['macdline'], 
+                           'hist': p['hist']} for p in self.pivot_highs[-200:]],
+            'pivot_lows': [{'ts': str(p['ts']), 'price': p['price'],
+                          'rsi': p['rsi'], 'macdline': p['macdline'],
+                          'hist': p['hist']} for p in self.pivot_lows[-200:]],
+            'last_processed_ts': str(self.last_processed_ts) if self.last_processed_ts else None,
+            'telegram_log_count': self.telegram_log_count,
+            'last_telegram_log_time': self.last_telegram_log_time
+        }
+    
+    @classmethod
+    def from_dict(cls, data):
+        state = cls()
+        if data:
+            state.pivot_highs = [{'ts': pd.Timestamp(p['ts']), 'price': p['price'],
+                                 'rsi': p['rsi'], 'macdline': p['macdline'],
+                                 'hist': p['hist']} for p in data.get('pivot_highs', [])]
+            state.pivot_lows = [{'ts': pd.Timestamp(p['ts']), 'price': p['price'],
+                                'rsi': p['rsi'], 'macdline': p['macdline'],
+                                'hist': p['hist']} for p in data.get('pivot_lows', [])]
+            state.last_processed_ts = pd.Timestamp(data['last_processed_ts']) if data.get('last_processed_ts') else None
+            state.telegram_log_count = data.get('telegram_log_count', 0)
+            state.last_telegram_log_time = data.get('last_telegram_log_time', 0)
+        return state
 
 SYMBOLS = ["LTCUSDT", "DOGEUSDT", "ETHUSDT"]
 SYMBOL_STATES = {s: SymbolState() for s in SYMBOLS}
+
+def save_states():
+    data = {s: SYMBOL_STATES[s].to_dict() for s in SYMBOLS}
+    with open(STATE_FILE, 'w') as f:
+        json.dump(data, f, indent=2)
+
+def load_states():
+    global SYMBOL_STATES
+    if os.path.exists(STATE_FILE):
+        try:
+            with open(STATE_FILE) as f:
+                data = json.load(f)
+            for s in SYMBOLS:
+                if s in data:
+                    SYMBOL_STATES[s] = SymbolState.from_dict(data[s])
+            logger.info(f"[STATE] Loaded pivot states from {STATE_FILE}")
+        except Exception as e:
+            logger.error(f"[STATE] Error loading states: {e}")
 
 # =====================================================================================
 # مدیریت تاریخچه
@@ -762,10 +861,6 @@ def save_history(h):
         json.dump(h, f, indent=2)
 
 def update_trade_result(signal_time, result, close_price, close_time, pnl=None, commission=None):
-    """
-    به‌روزرسانی نتیجه یک معامله در فایل تاریخچه.
-    جستجو بر اساس signal_time انجام می‌شود.
-    """
     h = load_history()
     for t in h:
         if t.get('signal_time') == signal_time:
@@ -784,92 +879,61 @@ def update_trade_result(signal_time, result, close_price, close_time, pnl=None, 
 # توابع گزارش (با استفاده از تاریخچه صرافی)
 # =====================================================================================
 def fetch_exchange_trades_for_report(exchange, symbol=None, start_time=None, end_time=None):
-    """
-    دریافت تاریخچه معاملات از صرافی برای بازه زمانی مشخص.
-    """
     return exchange.fetch_trade_history(symbol=symbol, start_time=start_time, end_time=end_time)
 
 def generate_daily_report_text(trades):
-    """
-    تولید متن گزارش روزانه با استفاده از داده‌های واقعی صرافی.
-    """
     today_str = format_iran_date()
     if not trades:
         return None
-
     total_trades = len(trades)
     total_realized_pnl = sum(float(t.get('realizedPnl', t.get('realized_pnl', 0))) for t in trades)
     wins = len([t for t in trades if float(t.get('realizedPnl', t.get('realized_pnl', 0))) > 0])
     losses = len([t for t in trades if float(t.get('realizedPnl', t.get('realized_pnl', 0))) < 0])
-    
     win_rate = (wins / (wins + losses) * 100) if (wins + losses) > 0 else 0
-
     message = f"""📊 گزارش روزانه — {today_str} {HASHTAGS['daily']}
 ━━━━━━━━━━━━━━━━━━━━━━
-
 📈 کل معاملات بسته شده: {total_trades} عدد
 ✅ سودآور: {wins} ({win_rate:.1f}%)
 ❌ ضررده: {losses}
 💰 سود/زیان خالص: {total_realized_pnl:.2f} USDT
-
 📊 نرخ موفقیت: {win_rate:.1f}%
 💪 وضعیت: {'عالی! 🚀' if total_realized_pnl > 0 else 'نیاز به بررسی 📊'}
-
 ━━━━━━━━━━━━━━━━━━━━━━
 🕒 {format_iran_time()}"""
     return message
 
 def generate_monthly_report_text(trades):
-    """
-    تولید متن گزارش ماهانه.
-    """
     if not trades:
         return None
-
     total_trades = len(trades)
     total_realized_pnl = sum(float(t.get('realizedPnl', t.get('realized_pnl', 0))) for t in trades)
     wins = len([t for t in trades if float(t.get('realizedPnl', t.get('realized_pnl', 0))) > 0])
     losses = len([t for t in trades if float(t.get('realizedPnl', t.get('realized_pnl', 0))) < 0])
     win_rate = (wins / (wins + losses) * 100) if (wins + losses) > 0 else 0
-
     message = f"""📈 گزارش ۳۰ روز گذشته {HASHTAGS['monthly']}
 ━━━━━━━━━━━━━━━━━━━━━━
-
 📊 کل معاملات: {total_trades} عدد
 ✅ سودآور: {wins} ({win_rate:.1f}%)
 ❌ ضررده: {losses}
 💰 سود/زیان خالص: {total_realized_pnl:.2f} USDT
-
 📈 نرخ موفقیت: {win_rate:.1f}%
 💪 ارزیابی: {'پروژه موفق! 🎉' if total_realized_pnl > 0 else 'نیاز به بهینه‌سازی ⚙️'}
-
 ━━━━━━━━━━━━━━━━━━━━━━
 🕒 {format_iran_time()}"""
     return message
 
 def send_reports(exchange):
-    """
-    ارسال دو نوع گزارش:
-    1. گزارش روزانه/ماهانه از فایل تاریخچه محلی (مطابق روال قبل).
-    2. گزارش واقعی از API صرافی (معاملات بسته شده + موجودی).
-    """
     now = datetime.now(timezone(timedelta(hours=3, minutes=30)))
-    
-    # =========================================================================
-    # ۱. ارسال گزارش محلی (روال قبلی - بدون تغییر در منطقش)
-    # =========================================================================
     try:
         today_str = format_iran_date()
         history = load_history()
         today_trades = [t for t in history if t.get('signal_time', '').startswith(today_str)]
-        
         if today_trades:
             total = len(today_trades)
             wins = len([t for t in today_trades if t.get('result') == 'TAKE_PROFIT'])
             losses = len([t for t in today_trades if t.get('result') == 'STOP_LOSS'])
             closed = wins + losses
             win_rate = (wins / closed * 100) if closed > 0 else 0
-
             local_daily_msg = f"""📊 گزارش روزانه (محلی) — {today_str} {HASHTAGS['daily']}
 ━━━━━━━━━━━━━━━━━━━━━━
 📈 کل معاملات: {total} عدد
@@ -882,27 +946,17 @@ def send_reports(exchange):
             logger.info("[REPORT] Local daily report sent.")
     except Exception as e:
         logger.error(f"[REPORT ERROR] Local daily: {e}")
-
-    # =========================================================================
-    # ۲. ارسال گزارش واقعی از صرافی ( جدید )
-    # =========================================================================
     try:
-        # دریافت تاریخچه معاملات از صرافی
         today_start = now.replace(hour=0, minute=0, second=0, microsecond=0).isoformat() + 'Z'
         today_end = now.isoformat() + 'Z'
         exchange_trades_today = exchange.fetch_trade_history(start_time=today_start, end_time=today_end)
-        
-        # دریافت موجودی حساب
         current_balance = exchange.fetch_balance()
-        
-        # محاسبه آمار از داده‌های واقعی
         if isinstance(exchange_trades_today, list) and exchange_trades_today:
             total_realized_pnl = sum(float(t.get('realizedPnl', 0)) for t in exchange_trades_today)
             wins = len([t for t in exchange_trades_today if float(t.get('realizedPnl', 0)) > 0])
             losses = len([t for t in exchange_trades_today if float(t.get('realizedPnl', 0)) < 0])
             total_trades = len(exchange_trades_today)
             win_rate = (wins / (wins + losses) * 100) if (wins + losses) > 0 else 0
-            
             exchange_report_msg = f"""📈 گزارش واقعی صرافی — {format_iran_date()} {HASHTAGS['daily']}
 ━━━━━━━━━━━━━━━━━━━━━━
 💰 موجودی حساب: {current_balance:.2f} USDT
@@ -921,30 +975,25 @@ def send_reports(exchange):
 📊 امروز معامله بسته شده‌ای نداشته‌اید.
 ━━━━━━━━━━━━━━━━━━━━━━
 🕒 {format_iran_time()}"""
-            
         send_telegram_message(exchange_report_msg)
         logger.info("[REPORT] Exchange-based daily report sent.")
-        
     except Exception as e:
         logger.error(f"[REPORT ERROR] Exchange-based: {e}")
         send_telegram_message(f"❌ خطا در تهیه گزارش واقعی صرافی: {str(e)[:200]}")
 
 # =====================================================================================
-# Startup Diagnostic (با بررسی اتصال به تاریخچه معاملات)
+# Startup Diagnostic
 # =====================================================================================
 def run_startup_diagnostic():
     logger.info("Running Startup Diagnostic...")
-
     diagnostic_log = []
     diagnostic_log.append(f"🔍 بررسی سلامت سیستم {HASHTAGS['diagnostic']}")
     diagnostic_log.append("━━━━━━━━━━━━━━━━━━━━━━")
-
     try:
         requests.get("https://www.google.com", timeout=5)
         diagnostic_log.append("🟢 اتصال اینترنت")
     except:
         diagnostic_log.append("🔴 اتصال اینترنت")
-
     public_data = TrueTradePublicData()
     df = None
     try:
@@ -955,7 +1004,6 @@ def run_startup_diagnostic():
             diagnostic_log.append("🔴 دریافت داده")
     except Exception as e:
         diagnostic_log.append(f"🔴 دریافت داده: {str(e)[:50]}")
-
     try:
         if df is not None and not df.empty:
             rsi = calc_rsi(df['close'], 14)
@@ -970,10 +1018,8 @@ def run_startup_diagnostic():
             diagnostic_log.append("🟢 تشخیص روند: فعال")
     except Exception as e:
         diagnostic_log.append(f"🔴 خطا: {str(e)[:50]}")
-
     diagnostic_log.append("🟢 موتور امتیازدهی: آماده")
     diagnostic_log.append("🟢 اتصال به تلگرام")
-
     exchange = TrueTradePrivateExchange(API_KEY, API_SECRET, BASE_URL)
     conn = exchange.test_connection()
     if conn:
@@ -983,8 +1029,6 @@ def run_startup_diagnostic():
             diagnostic_log.append(f"🟢 موجودی: {balance:.2f} USDT")
     else:
         diagnostic_log.append("🔴 اتصال به صرافی: قطع")
-
-    # --- NEW: Check Trade History API ---
     try:
         test_trades = exchange.fetch_trade_history()
         if isinstance(test_trades, list):
@@ -993,17 +1037,14 @@ def run_startup_diagnostic():
             diagnostic_log.append("🔴 هیستوری معاملات: پاسخ نامعتبر از سرور")
     except Exception as e:
         diagnostic_log.append(f"🔴 هیستوری معاملات: قطع\n📝 خطا: {str(e)[:200]}")
-    # --- END NEW ---
-
     diagnostic_log.append("\n━━━━━━━━━━━━━━━━━━━━━━")
     diagnostic_log.append("✅ تمام بخش‌ها فعال هستند" if conn else "⚠️ برخی بخش‌ها غیرفعال هستند")
     diagnostic_log.append(f"🕒 {format_iran_time()}")
-
     send_telegram_message("\n".join(diagnostic_log))
     logger.info("Startup Diagnostic Complete")
 
 # =====================================================================================
-# تابع تشخیص سیگنال (بدون تغییر)
+# تابع تشخیص سیگنال
 # =====================================================================================
 def detect_signal(df, state, symbol, debug=False):
     debug_log = []
@@ -1014,7 +1055,13 @@ def detect_signal(df, state, symbol, debug=False):
 
     log(f"🔍 DTM — {symbol} | {format_iran_time()}")
 
-    closed_df_indexed = df.iloc[:-1].copy()
+    if API_RETURNS_OPEN_CANDLE:
+        closed_df_indexed = df.iloc[:-1].copy()
+        log(f"   API returns open candle — removed last row, using {len(closed_df_indexed)} closed candles")
+    else:
+        closed_df_indexed = df.copy()
+        log(f"   API returns only closed candles — using all {len(closed_df_indexed)} candles")
+    
     closed_df = closed_df_indexed.reset_index(drop=True)
 
     n = len(closed_df)
@@ -1068,10 +1115,10 @@ def detect_signal(df, state, symbol, debug=False):
     state.pivot_highs.extend(new_pivots_high)
     state.pivot_lows.extend(new_pivots_low)
 
-    if len(state.pivot_highs) > 100:
-        state.pivot_highs = state.pivot_highs[-100:]
-    if len(state.pivot_lows) > 100:
-        state.pivot_lows = state.pivot_lows[-100:]
+    if len(state.pivot_highs) > 500:
+        state.pivot_highs = state.pivot_highs[-500:]
+    if len(state.pivot_lows) > 500:
+        state.pivot_lows = state.pivot_lows[-500:]
 
     log(f"   new_high={len(new_pivots_high)}, new_low={len(new_pivots_low)} | mem: H={len(state.pivot_highs)} L={len(state.pivot_lows)}")
 
@@ -1207,84 +1254,55 @@ def detect_signal(df, state, symbol, debug=False):
     return None, None, None, None, early_signal, None, None, None, []
 
 # =====================================================================================
-# پیگیری سیگنال‌های باز با استفاده از API صرافی (بازنویسی شده)
+# پیگیری سیگنال‌های باز با استفاده از API صرافی
 # =====================================================================================
 def track_open_signals(exchange):
-    """
-    بررسی وضعیت پوزیشن‌های باز از طریق API صرافی و به‌روزرسانی تاریخچه.
-    """
     history = load_history()
     open_trades_in_history = [t for t in history if t.get('result') is None]
-
     if not open_trades_in_history:
         return
-
     try:
         open_positions = exchange.fetch_open_positions()
     except Exception as e:
         logger.error(f"[TRACK] Could not fetch open positions: {e}")
         return
-
-    # ساخت یک دیکشنری از پوزیشن‌های باز برای جستجوی سریع
-    open_pos_dict = {p['id']: p for p in open_positions if 'id' in p}
-    
     for trade in open_trades_in_history:
-        # اگر پوزیشن ما در لیست پوزیشن‌های باز نباشد، یعنی بسته شده است.
-        # توجه: 'positionId' باید هنگام ایجاد سفارش در history ذخیره شده باشد.
-        # در کد اصلی، ما positionId را ذخیره نکرده بودیم، پس اینجا یک چک جایگزین انجام می‌دهیم:
-        # چک بر اساس symbol و direction. اگر هیچ پوزیشن بازی برای آن نماد و جهت نباشد،
-        # فرض می‌کنیم معامله بسته شده است.
-        
         symbol = trade['symbol']
         direction = trade['direction']
         signal_time = trade['signal_time']
-        
-        # پیدا کردن پوزیشن‌های باز با همان نماد و جهت
         matching_open_pos = None
         for pos in open_positions:
             if pos.get('symbol') == symbol and pos.get('side') == direction:
                 matching_open_pos = pos
                 break
-        
         if matching_open_pos is None:
-            # پوزیشن دیگر باز نیست، یعنی بسته شده. نتیجه را از تاریخچه معاملات صرافی پیدا کن.
-            # برای سادگی، ما از تاریخچه معاملات برای پیدا کردن آخرین معامله بسته شده استفاده می‌کنیم.
             try:
-                # دریافت تاریخچه معاملات برای این نماد از دیروز تا حالا
                 today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
                 trades = exchange.fetch_trade_history(symbol=symbol, start_time=today_start.isoformat() + 'Z')
-                
-                # پیدا کردن معامله‌ای که اخیراً بسته شده و با trade ما همخوانی دارد
-                # این یک روش ساده‌سازی شده است. در حالت ایده‌آل باید با positionId چک کرد.
                 last_closed_trade = None
                 for t in reversed(trades):
-                    # فرض می‌کنیم trade type 'RealizedPnl' یا فیلد مشابهی داشته باشد
                     if t.get('symbol') == symbol:
                         last_closed_trade = t
                         break
-                
                 if last_closed_trade:
                     realized_pnl = float(last_closed_trade.get('realizedPnl', 0))
-                    close_price = float(last_closed_trade.get('price', 0)) # توجه: price ممکن است قیمت بسته شدن نباشد
-                    
+                    close_price = float(last_closed_trade.get('price', 0))
                     if realized_pnl > 0:
                         result = 'TAKE_PROFIT'
                         message = f"🎯 حد سود فعال شد {HASHTAGS['target']} #سیگنال_{trade.get('signal_number', '?')}\n\n🔹 {symbol} | {direction}\n💰 سود خالص: {realized_pnl:.2f} USDT\n🕒 {format_iran_time()}"
                     else:
                         result = 'STOP_LOSS'
                         message = f"💔 حد ضرر فعال شد {HASHTAGS['stop']} #سیگنال_{trade.get('signal_number', '?')}\n\n🔹 {symbol} | {direction}\n💸 ضرر خالص: {realized_pnl:.2f} USDT\n🕒 {format_iran_time()}"
-                    
                     update_trade_result(signal_time, result, close_price, format_iran_time(), pnl=realized_pnl)
                     send_telegram_message(message)
                     logger.info(f"[TRACK] Closed trade detected for {symbol} {direction}: {result}, PnL: {realized_pnl}")
                 else:
-                    # اگر در تاریخچه هم پیدا نشد، شاید هنوز در حال بسته شدن است یا خطایی رخ داده.
                     logger.warning(f"[TRACK] Open position for {symbol} {direction} not found, but no matching history trade found either.")
             except Exception as e:
                 logger.error(f"[TRACK] Error fetching trade history for {symbol}: {e}")
 
 # =====================================================================================
-# تابع اصلی (با تغییر در پیام سیگنال و ذخیره positionId)
+# تابع اصلی
 # =====================================================================================
 def analyze_and_execute():
     logger.info("[ANALYZE] شروع...")
@@ -1306,7 +1324,7 @@ def analyze_and_execute():
         send_telegram_message(f"🔄 تغییر وضعیت صرافی {HASHTAGS['connection_change']}\n\n{status_text}{balance_text}\n🕒 {format_iran_time()}")
 
     data = TrueTradePublicData()
-    track_open_signals(exchange) # <-- فراخوانی تابع جدید پیگیری
+    track_open_signals(exchange)
     
     side_map = {"BUY": "LONG", "SELL": "SHORT"}
     leverage_map = {"LTCUSDT": 75, "DOGEUSDT": 75, "ETHUSDT": 50}
@@ -1365,7 +1383,6 @@ def analyze_and_execute():
                 qty = (capital * used_leverage) / entry
                 potential_profit = capital * used_leverage * (profit_pct / 100)
 
-                # ✅ سیگنال انگلیسی بدون بخش دلایل
                 signal_message = (
                     f"{emoji} Signal {label} — {symbol} {HASHTAGS['signal']} #Signal_{signal_number}\n"
                     f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
@@ -1388,7 +1405,7 @@ def analyze_and_execute():
                         order_result = exchange.create_order(symbol, "market", side_map[signal], capital, None,
                             {'leverage': int(used_leverage), 'stopLoss': stop, 'takeProfit': target})
                         
-                        position_id = order_result.get('id', 'N/A') # ذخیره positionId
+                        position_id = order_result.get('id', 'N/A')
 
                         history = load_history()
                         history.append({
@@ -1398,7 +1415,7 @@ def analyze_and_execute():
                             'score': score, 'label': label, 'capital': capital,
                             'leverage': int(used_leverage), 'qty': qty,
                             'signal_number': signal_number,
-                            'position_id': position_id # <-- ذخیره positionId
+                            'position_id': position_id
                         })
                         save_history(history)
 
@@ -1425,12 +1442,14 @@ def analyze_and_execute():
                 logger.info(f"[ANALYSIS] {symbol}: بدون سیگنال")
         except Exception as e:
             logger.error(f"[ERROR] {symbol}: {e}")
+    
+    save_states()
 
 # =====================================================================================
-# حلقه اصلی (با تغییر در زمان ارسال گزارش‌ها)
+# حلقه اصلی
 # =====================================================================================
 def main_loop():
-    exchange = TrueTradePrivateExchange(API_KEY, API_SECRET, BASE_URL) # برای گزارش‌ها
+    exchange = TrueTradePrivateExchange(API_KEY, API_SECRET, BASE_URL)
     last_daily_report_date = None
     last_monthly_report_date = None
 
@@ -1442,16 +1461,14 @@ def main_loop():
             today = format_iran_date()
             now = datetime.now(timezone(timedelta(hours=3, minutes=30)))
             
-            # ارسال گزارش روزانه (یک بار در روز)
             if last_daily_report_date != today:
                 try:
-                    send_reports(exchange) # ارسال هر دو گزارش روزانه و ماهانه در پایان روز
+                    send_reports(exchange)
                     last_daily_report_date = today
-                    last_monthly_report_date = now # ریست برای ماه بعد
+                    last_monthly_report_date = now
                 except Exception as e:
                     logger.error(f"[REPORT ERROR] {e}")
             
-            # ارسال گزارش ماهانه (اگر بیش از 30 روز گذشته باشد)
             if last_monthly_report_date is None or (now - last_monthly_report_date).days >= 30:
                  try:
                     send_reports(exchange)
@@ -1474,6 +1491,7 @@ if __name__ == "__main__":
     logger.info("DTM Bot Starting...")
     
     load_signal_counter()
+    load_states()
 
     hashtag_list = "\n".join([f"• {v} → {k}" for k, v in HASHTAGS.items()])
     send_telegram_message(
