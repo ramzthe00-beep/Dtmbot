@@ -2,23 +2,7 @@
 """
 DTM Divergence Auto-Trading Bot - TheTrueTrade (نسخه هیبریدی)
 ====================================================================
-نسخه نهایی کامل — منطق واگرایی مطابق دقیق با Pine Script:
-- Pivot: حالت سریع (5/3)
-- فیلتر MTF: استفاده نمی‌شود
-- کندل تأییدیه: روی کندل تأیید (bar2 + RIGHT_BARS)
-- رفع Off-by-one در mid_peak/mid_trough
-- رفع فرمول avg_body در Price Action
-- رفع باگ فرمول شیب روند (slope × lookback)
-- رفع باگ منطق تغییر رنگ MACD Histogram (بین دو پیوت)
-- رفع Gating: RSI + MACD Line + MACD Histogram هر سه اجباری
-- رفع فرمول فیبوناچی (بر اساس ابتدای روند واقعی)
-- رفع تکرار سیگنال: فقط وقتی پیوت دوم تازه شکل گرفته باشد
-- رفع فیلتر روند برای Hidden Divergence (بدون شرط روند)
-- fetch_balance از /futures/assets با ساختار صحیح پاسخ
-- رند کردن size، stopLoss و takeProfit با Tick Size و Precision هر ارز
-- نمایش موجودی در پیام اتصال صرافی
-- هشتگ‌گذاری همه پیام‌های تلگرام
-- شماره‌گذاری سیگنال‌ها
+نسخه نهایی کامل — منطق واگرایی مطابق دقیق با Pine Script
 """
 
 import os
@@ -184,10 +168,14 @@ class TrueTradePrivateExchange:
             "Content-Type": "application/json"
         }
         response = self.session.request(method, f"{self.base_url}{uri}", headers=headers, json=data, timeout=15)
+        
+        # ذخیره response برای لاگ دقیق خطا
+        self._last_response = response
+        
         if not response.ok:
             if response.status_code in [401, 403]:
                 self.connected = False
-            logger.error(f"[EXCHANGE ERROR] {method} {uri} | Status: {response.status_code} | Body: {response.text[:300]}")
+            logger.error(f"[EXCHANGE ERROR] {method} {uri} | Status: {response.status_code} | Body: {response.text[:500]}")
             response.raise_for_status()
         else:
             self.connected = True
@@ -327,13 +315,48 @@ class TrueTradePrivateExchange:
             }
 
         except Exception as e:
-            # لاگ خطا به تلگرام
+            # لاگ خطا با جزئیات کامل
+            error_detail = ""
+            error_body = ""
+            status_code = ""
+            
+            if hasattr(self, '_last_response'):
+                response = self._last_response
+                status_code = response.status_code
+                try:
+                    error_body = response.text
+                    error_json = response.json()
+                    if 'errors' in error_json:
+                        if isinstance(error_json['errors'], list):
+                            for err in error_json['errors']:
+                                error_detail += f"• {err.get('message', '')}"
+                                if err.get('field'):
+                                    error_detail += f" (field: {err['field']})"
+                                error_detail += "\n"
+                        elif isinstance(error_json['errors'], dict):
+                            for field, msgs in error_json['errors'].items():
+                                if isinstance(msgs, list):
+                                    for msg in msgs:
+                                        error_detail += f"• {field}: {msg}\n"
+                                else:
+                                    error_detail += f"• {field}: {msgs}\n"
+                    elif 'message' in error_json:
+                        error_detail = error_json['message']
+                except:
+                    error_detail = error_body[:500]
+
             send_telegram_message(
                 f"❌ ثبت سفارش - خطا {HASHTAGS['order_error']}\n"
                 f"━━━━━━━━━━━━━━━━━━━━━━\n"
                 f"🔹 Symbol: {symbol}\n"
                 f"🔸 Side: {side.upper()}\n"
-                f"📝 Error: {str(e)[:500]}\n"
+                f"📊 Status: {status_code}\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"📝 دلیل خطا:\n{error_detail if error_detail else str(e)[:500]}\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"📤 درخواست:\n```\n{json.dumps(order_data, indent=2)}\n```\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"📥 پاسخ کامل:\n```\n{error_body[:1000]}\n```\n"
                 f"━━━━━━━━━━━━━━━━━━━━━━\n"
                 f"🕒 {format_iran_time()}"
             )
