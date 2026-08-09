@@ -2,13 +2,14 @@
 """
 DTM Divergence Auto-Trading Bot - TheTrueTrade (نسخه هیبریدی)
 ====================================================================
-نسخه نهایی کامل — منطق واگرایی مطابق دقیق با Pine Script:
+نسخه نهایی کامل — منطق واگرایی دقیقاً مطابق Pine Script:
 - Pivot: حالت سریع (5/3)
+- RSI/MACD در 3 کندل بعد از Pivot (مثل ta.valuewhen با rightBars)
+- شرط روند: تفاضل دو رگرسیون (مثل ta.linreg در Pine)
 - فیلتر MTF: استفاده نمی‌شود
 - کندل تأییدیه: روی کندل تأیید (bar2 + RIGHT_BARS)
 - رفع Off-by-one در mid_peak/mid_trough
 - رفع فرمول avg_body در Price Action
-- رفع باگ فرمول شیب روند (slope × lookback)
 - رفع باگ منطق تغییر رنگ MACD Histogram (بین دو پیوت)
 - رفع Gating: RSI + MACD Line + MACD Histogram هر سه اجباری
 - رفع فرمول فیبوناچی (بر اساس ابتدای روند واقعی)
@@ -17,7 +18,7 @@ DTM Divergence Auto-Trading Bot - TheTrueTrade (نسخه هیبریدی)
 - fetch_balance از /futures/assets با ساختار صحیح پاسخ
 - استفاده از cost (مارجین) برای MARKET order طبق کتابچه API
 - نمایش موجودی در پیام اتصال صرافی
-- هشتگ‌گذاری همه پیام‌های تلگرام (فارسی برای خوانایی)
+- هشتگ‌گذاری همه پیام‌های تلگرام
 - شماره‌گذاری سیگنال‌ها
 """
 
@@ -439,30 +440,67 @@ def find_pivot_low(low, left=5, right=3):
             result.iloc[i] = low.iloc[i]
     return result
 
+# =====================================================================================
+# روند — دقیقاً مثل Pine Script: تفاضل دو ta.linreg
+# =====================================================================================
 def is_trending_up(close, ref_bar, lookback=TREND_LOOKBACK, slope_min_pct=TREND_SLOPE_MIN_PCT):
-    if ref_bar is None or ref_bar - lookback < 0:
+    """
+    معادل isTrendingUp در Pine Script:
+    slope = ta.linreg(close[offset], trendLookback, 0) - ta.linreg(close[offset + trendLookback], trendLookback, 0)
+    """
+    if ref_bar is None or ref_bar - 2 * lookback + 1 < 0:
         return False
-    y = close.iloc[ref_bar - lookback:ref_bar + 1].values
-    if len(y) < 2:
+    
+    # رگرسیون فعلی (lookback کندل منتهی به ref_bar)
+    y_current = close.iloc[ref_bar - lookback + 1:ref_bar + 1].values
+    if len(y_current) < 2:
         return False
-    slope_per_bar = np.polyfit(np.arange(len(y)), y, 1)[0]
-    total_slope = slope_per_bar * lookback
-    avg = y.mean()
+    
+    # رگرسیون قبلی (lookback کندل قبل از رگرسیون فعلی)
+    y_past = close.iloc[ref_bar - 2 * lookback + 1:ref_bar - lookback + 1].values
+    if len(y_past) < 2:
+        return False
+    
+    slope_current = np.polyfit(np.arange(len(y_current)), y_current, 1)[0]
+    slope_past = np.polyfit(np.arange(len(y_past)), y_past, 1)[0]
+    
+    # تفاضل دو رگرسیون (مثل Pine)
+    total_slope = slope_current * lookback - slope_past * lookback
+    
+    avg = y_current.mean()
     if avg == 0:
         return False
+    
     return (total_slope / avg) * 100 > slope_min_pct
 
 def is_trending_down(close, ref_bar, lookback=TREND_LOOKBACK, slope_min_pct=TREND_SLOPE_MIN_PCT):
-    if ref_bar is None or ref_bar - lookback < 0:
+    """
+    معادل isTrendingDown در Pine Script:
+    slope = ta.linreg(close[offset], trendLookback, 0) - ta.linreg(close[offset + trendLookback], trendLookback, 0)
+    """
+    if ref_bar is None or ref_bar - 2 * lookback + 1 < 0:
         return False
-    y = close.iloc[ref_bar - lookback:ref_bar + 1].values
-    if len(y) < 2:
+    
+    # رگرسیون فعلی (lookback کندل منتهی به ref_bar)
+    y_current = close.iloc[ref_bar - lookback + 1:ref_bar + 1].values
+    if len(y_current) < 2:
         return False
-    slope_per_bar = np.polyfit(np.arange(len(y)), y, 1)[0]
-    total_slope = slope_per_bar * lookback
-    avg = y.mean()
+    
+    # رگرسیون قبلی (lookback کندل قبل از رگرسیون فعلی)
+    y_past = close.iloc[ref_bar - 2 * lookback + 1:ref_bar - lookback + 1].values
+    if len(y_past) < 2:
+        return False
+    
+    slope_current = np.polyfit(np.arange(len(y_current)), y_current, 1)[0]
+    slope_past = np.polyfit(np.arange(len(y_past)), y_past, 1)[0]
+    
+    # تفاضل دو رگرسیون (مثل Pine)
+    total_slope = slope_current * lookback - slope_past * lookback
+    
+    avg = y_current.mean()
     if avg == 0:
         return False
+    
     return (total_slope / avg) * 100 < -slope_min_pct
 
 def resolve_bar_from_ts(df_indexed, ts):
@@ -776,7 +814,8 @@ SYMBOLS = ["LTCUSDT", "DOGEUSDT", "ETHUSDT"]
 SYMBOL_STATES = {s: SymbolState() for s in SYMBOLS}
 
 # =====================================================================================
-# مدیریت تاریخچه# =====================================================================================
+# مدیریت تاریخچه
+# =====================================================================================
 def load_history():
     if os.path.exists(HISTORY_FILE):
         try:
@@ -983,15 +1022,24 @@ def detect_signal(df, state, symbol, debug=False):
     for i in range(start_bar, last_valid_pivot_index + 1):
         ts = closed_df_indexed.index[i]
         if not pd.isna(pivot_high.iloc[i]) and ts not in existing_high_ts:
-            new_pivots_high.append({
-                'ts': ts, 'price': pivot_high.iloc[i],
-                'rsi': rsi_val.iloc[i], 'macdline': macd_line.iloc[i], 'hist': hist_line.iloc[i]
-            })
+            # ✅ RSI/MACD در ۳ کندل بعد از Pivot (مثل Pine: ta.valuewhen با rightBars)
+            idx_rsi_macd = i + RIGHT_BARS
+            if idx_rsi_macd < n:
+                new_pivots_high.append({
+                    'ts': ts, 'price': pivot_high.iloc[i],
+                    'rsi': rsi_val.iloc[idx_rsi_macd],
+                    'macdline': macd_line.iloc[idx_rsi_macd],
+                    'hist': hist_line.iloc[idx_rsi_macd]
+                })
         if not pd.isna(pivot_low.iloc[i]) and ts not in existing_low_ts:
-            new_pivots_low.append({
-                'ts': ts, 'price': pivot_low.iloc[i],
-                'rsi': rsi_val.iloc[i], 'macdline': macd_line.iloc[i], 'hist': hist_line.iloc[i]
-            })
+            idx_rsi_macd = i + RIGHT_BARS
+            if idx_rsi_macd < n:
+                new_pivots_low.append({
+                    'ts': ts, 'price': pivot_low.iloc[i],
+                    'rsi': rsi_val.iloc[idx_rsi_macd],
+                    'macdline': macd_line.iloc[idx_rsi_macd],
+                    'hist': hist_line.iloc[idx_rsi_macd]
+                })
 
     if n > 0:
         state.last_processed_ts = closed_df_indexed.index[min(last_valid_pivot_index, n-1)]
