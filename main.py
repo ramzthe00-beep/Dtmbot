@@ -1316,7 +1316,7 @@ def analyze_and_execute():
                     capital = required_capital
                     actual_risk = TARGET_RISK
                 else:
-                    capital = balance
+                    capital = balance * 0.98
                     actual_risk = capital * used_leverage * stop_pct
                     capital_reduced = True
 
