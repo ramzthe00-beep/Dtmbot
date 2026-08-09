@@ -26,6 +26,8 @@ DTM Divergence Auto-Trading Bot - TheTrueTrade (نسخه هیبریدی)
 - time.sleep بین پیام سیگنال و سفارش
 - **NEW**: پیگیری پوزیشن‌های باز از طریق API صرافی
 - **NEW**: دریافت تاریخچه معاملات از صرافی برای گزارش‌ها
+- **NEW**: پیام سیگنال انگلیسی (بدون بخش دلایل)
+- **NEW**: گزارش واقعی صرافی (معاملات + موجودی)
 """
 
 import os
@@ -847,37 +849,88 @@ def generate_monthly_report_text(trades):
 
 def send_reports(exchange):
     """
-    ارسال گزارش‌های روزانه و ماهانه بر اساس تاریخچه واقعی معاملات.
+    ارسال دو نوع گزارش:
+    1. گزارش روزانه/ماهانه از فایل تاریخچه محلی (مطابق روال قبل).
+    2. گزارش واقعی از API صرافی (معاملات بسته شده + موجودی).
     """
     now = datetime.now(timezone(timedelta(hours=3, minutes=30)))
-    today_start = now.replace(hour=0, minute=0, second=0, microsecond=0).isoformat() + 'Z'
-    today_end = now.isoformat() + 'Z'
     
-    # گزارش روزانه
-    daily_trades = fetch_exchange_trades_for_report(
-        exchange, 
-        start_time=today_start, 
-        end_time=today_end
-    )
-    daily_msg = generate_daily_report_text(daily_trades)
-    if daily_msg:
-        send_telegram_message(daily_msg)
-        logger.info("[REPORT] Daily report sent.")
-    
-    # گزارش ماهانه
-    month_start = (now - timedelta(days=30)).isoformat() + 'Z'
-    monthly_trades = fetch_exchange_trades_for_report(
-        exchange, 
-        start_time=month_start, 
-        end_time=today_end
-    )
-    monthly_msg = generate_monthly_report_text(monthly_trades)
-    if monthly_msg:
-        send_telegram_message(monthly_msg)
-        logger.info("[REPORT] Monthly report sent.")
+    # =========================================================================
+    # ۱. ارسال گزارش محلی (روال قبلی - بدون تغییر در منطقش)
+    # =========================================================================
+    try:
+        today_str = format_iran_date()
+        history = load_history()
+        today_trades = [t for t in history if t.get('signal_time', '').startswith(today_str)]
+        
+        if today_trades:
+            total = len(today_trades)
+            wins = len([t for t in today_trades if t.get('result') == 'TAKE_PROFIT'])
+            losses = len([t for t in today_trades if t.get('result') == 'STOP_LOSS'])
+            closed = wins + losses
+            win_rate = (wins / closed * 100) if closed > 0 else 0
+
+            local_daily_msg = f"""📊 گزارش روزانه (محلی) — {today_str} {HASHTAGS['daily']}
+━━━━━━━━━━━━━━━━━━━━━━
+📈 کل معاملات: {total} عدد
+✅ موفق: {wins} ({win_rate:.1f}%)
+❌ ناموفق: {losses}
+📊 نرخ موفقیت: {win_rate:.1f}%
+━━━━━━━━━━━━━━━━━━━━━━
+🕒 {format_iran_time()}"""
+            send_telegram_message(local_daily_msg)
+            logger.info("[REPORT] Local daily report sent.")
+    except Exception as e:
+        logger.error(f"[REPORT ERROR] Local daily: {e}")
+
+    # =========================================================================
+    # ۲. ارسال گزارش واقعی از صرافی ( جدید )
+    # =========================================================================
+    try:
+        # دریافت تاریخچه معاملات از صرافی
+        today_start = now.replace(hour=0, minute=0, second=0, microsecond=0).isoformat() + 'Z'
+        today_end = now.isoformat() + 'Z'
+        exchange_trades_today = exchange.fetch_trade_history(start_time=today_start, end_time=today_end)
+        
+        # دریافت موجودی حساب
+        current_balance = exchange.fetch_balance()
+        
+        # محاسبه آمار از داده‌های واقعی
+        if isinstance(exchange_trades_today, list) and exchange_trades_today:
+            total_realized_pnl = sum(float(t.get('realizedPnl', 0)) for t in exchange_trades_today)
+            wins = len([t for t in exchange_trades_today if float(t.get('realizedPnl', 0)) > 0])
+            losses = len([t for t in exchange_trades_today if float(t.get('realizedPnl', 0)) < 0])
+            total_trades = len(exchange_trades_today)
+            win_rate = (wins / (wins + losses) * 100) if (wins + losses) > 0 else 0
+            
+            exchange_report_msg = f"""📈 گزارش واقعی صرافی — {format_iran_date()} {HASHTAGS['daily']}
+━━━━━━━━━━━━━━━━━━━━━━
+💰 موجودی حساب: {current_balance:.2f} USDT
+📊 کل معاملات بسته شده: {total_trades} عدد
+✅ سودآور: {wins} ({win_rate:.1f}%)
+❌ ضررده: {losses}
+💵 سود/زیان خالص: {total_realized_pnl:.2f} USDT
+📈 نرخ موفقیت: {win_rate:.1f}%
+💪 وضعیت: {'عالی! 🚀' if total_realized_pnl > 0 else 'نیاز به بررسی 📊'}
+━━━━━━━━━━━━━━━━━━━━━━
+🕒 {format_iran_time()}"""
+        else:
+            exchange_report_msg = f"""📈 گزارش واقعی صرافی — {format_iran_date()} {HASHTAGS['daily']}
+━━━━━━━━━━━━━━━━━━━━━━
+💰 موجودی حساب: {current_balance:.2f} USDT
+📊 امروز معامله بسته شده‌ای نداشته‌اید.
+━━━━━━━━━━━━━━━━━━━━━━
+🕒 {format_iran_time()}"""
+            
+        send_telegram_message(exchange_report_msg)
+        logger.info("[REPORT] Exchange-based daily report sent.")
+        
+    except Exception as e:
+        logger.error(f"[REPORT ERROR] Exchange-based: {e}")
+        send_telegram_message(f"❌ خطا در تهیه گزارش واقعی صرافی: {str(e)[:200]}")
 
 # =====================================================================================
-# Startup Diagnostic (بدون تغییر)
+# Startup Diagnostic (با بررسی اتصال به تاریخچه معاملات)
 # =====================================================================================
 def run_startup_diagnostic():
     logger.info("Running Startup Diagnostic...")
@@ -930,6 +983,17 @@ def run_startup_diagnostic():
             diagnostic_log.append(f"🟢 موجودی: {balance:.2f} USDT")
     else:
         diagnostic_log.append("🔴 اتصال به صرافی: قطع")
+
+    # --- NEW: Check Trade History API ---
+    try:
+        test_trades = exchange.fetch_trade_history()
+        if isinstance(test_trades, list):
+            diagnostic_log.append(f"🟢 هیستوری معاملات: متصل ({len(test_trades)} رکورد)")
+        else:
+            diagnostic_log.append("🔴 هیستوری معاملات: پاسخ نامعتبر از سرور")
+    except Exception as e:
+        diagnostic_log.append(f"🔴 هیستوری معاملات: قطع\n📝 خطا: {str(e)[:200]}")
+    # --- END NEW ---
 
     diagnostic_log.append("\n━━━━━━━━━━━━━━━━━━━━━━")
     diagnostic_log.append("✅ تمام بخش‌ها فعال هستند" if conn else "⚠️ برخی بخش‌ها غیرفعال هستند")
@@ -1272,9 +1336,8 @@ def analyze_and_execute():
                 profit_pct = (target-entry)/entry*100 if signal=="BUY" else (entry-target)/entry*100
                 loss_pct = (entry-stop)/entry*100 if signal=="BUY" else (stop-entry)/entry*100
                 rr = abs(profit_pct/loss_pct) if loss_pct != 0 else 0
-                direction_text = "LONG (خرید)" if signal == "BUY" else "SHORT (فروش)"
+                direction_text = "LONG" if signal == "BUY" else "SHORT"
                 direction_emoji = "🟢" if signal == "BUY" else "🔴"
-                details_text = "\n".join([f"{i+1}. {d}" for i, d in enumerate(details)]) if details else ""
 
                 signal_number = get_next_signal_number()
 
@@ -1302,19 +1365,18 @@ def analyze_and_execute():
                 qty = (capital * used_leverage) / entry
                 potential_profit = capital * used_leverage * (profit_pct / 100)
 
-                # ✅ پیام سیگنال با فرمت کامل
+                # ✅ سیگنال انگلیسی بدون بخش دلایل
                 signal_message = (
-                    f"{emoji} سیگنال {label} — {symbol} {HASHTAGS['signal']} #سیگنال_{signal_number}\n"
+                    f"{emoji} Signal {label} — {symbol} {HASHTAGS['signal']} #Signal_{signal_number}\n"
                     f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
-                    f"📊 امتیاز: {score}/5\n"
-                    f"🔸 {direction_emoji} جهت: {direction_text}\n\n"
-                    f"📍 ورود: {entry:.{PRICE_PRECISION.get(symbol, 2)}f}\n"
-                    f"🛑 ضرر: {stop:.{PRICE_PRECISION.get(symbol, 2)}f}\n"
-                    f"🎯 سود: {target:.{PRICE_PRECISION.get(symbol, 2)}f}\n\n"
-                    f"📈 سود احتمالی: +{profit_pct:.2f}%\n"
-                    f"📉 ضرر احتمالی: -{loss_pct:.2f}%\n"
-                    f"⚖️ نسبت ریسک به ریوارد: {rr:.2f}\n\n"
-                    f"✅ دلایل:\n{details_text}\n\n"
+                    f"📊 Score: {score}/5\n"
+                    f"🔸 {direction_emoji} Direction: {direction_text}\n\n"
+                    f"📍 Entry: {entry:.{PRICE_PRECISION.get(symbol, 2)}f}\n"
+                    f"🛑 Stop Loss: {stop:.{PRICE_PRECISION.get(symbol, 2)}f}\n"
+                    f"🎯 Take Profit: {target:.{PRICE_PRECISION.get(symbol, 2)}f}\n\n"
+                    f"📈 Potential Profit: +{profit_pct:.2f}%\n"
+                    f"📉 Potential Loss: -{loss_pct:.2f}%\n"
+                    f"⚖️ Risk/Reward Ratio: {rr:.2f}\n\n"
                     f"━━━━━━━━━━━━━━━━━━━━━━\n"
                     f"🕒 {format_iran_time()}"
                 )
