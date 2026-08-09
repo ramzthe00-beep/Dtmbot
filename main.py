@@ -15,7 +15,7 @@ DTM Divergence Auto-Trading Bot - TheTrueTrade (نسخه هیبریدی)
 - رفع تکرار سیگنال: فقط وقتی پیوت دوم تازه شکل گرفته باشد
 - رفع فیلتر روند برای Hidden Divergence (بدون شرط روند)
 - fetch_balance از /futures/assets با ساختار صحیح پاسخ
-- رند کردن size، stopLoss و takeProfit با Tick Size هر ارز
+- رند کردن size، stopLoss و takeProfit با Tick Size و Precision هر ارز
 - نمایش موجودی در پیام اتصال صرافی
 - هشتگ‌گذاری همه پیام‌های تلگرام
 - شماره‌گذاری سیگنال‌ها
@@ -269,12 +269,15 @@ class TrueTradePrivateExchange:
         # رند کردن size با Tick Size
         rounded_size = round_size(amount, symbol)
 
+        # Precision برای این ارز
+        prec = PRICE_PRECISION.get(symbol.upper(), 2)
+
         order_data = {
             "symbol": symbol.upper(),
             "side": side.upper(),
             "tradeType": order_type.upper(),
             "leverage": params.get('leverage', 1) if params else 1,
-            "size": str(rounded_size),
+            "size": f"{rounded_size:.{prec}f}",
             "walletType": "debit"
         }
 
@@ -283,9 +286,9 @@ class TrueTradePrivateExchange:
 
         if params:
             if 'stopLoss' in params:
-                order_data["stopLoss"] = str(params['stopLoss'])
+                order_data["stopLoss"] = f"{params['stopLoss']:.{prec}f}"
             if 'takeProfit' in params:
-                order_data["takeProfit"] = str(params['takeProfit'])
+                order_data["takeProfit"] = f"{params['takeProfit']:.{prec}f}"
 
         # لاگ کامل درخواست به تلگرام - فقط هنگام ثبت سفارش
         send_telegram_message(
@@ -294,7 +297,7 @@ class TrueTradePrivateExchange:
             f"🔹 Symbol: {symbol}\n"
             f"🔸 Side: {side.upper()}\n"
             f"🔸 Type: {order_type.upper()}\n"
-            f"📦 Size: {rounded_size}\n"
+            f"📦 Size: {rounded_size:.{prec}f}\n"
             f"🔧 Leverage: {order_data['leverage']}\n"
             f"📦 Body:\n```\n{json.dumps(order_data, indent=2)}\n```\n"
             f"━━━━━━━━━━━━━━━━━━━━━━\n"
@@ -1238,7 +1241,6 @@ def analyze_and_execute():
                 # شماره سیگنال
                 signal_number = get_next_signal_number()
                 signal_hashtag = f"#Signal_{signal_number}"
-                
 
                 TARGET_RISK = 3.5
                 leverage = leverage_map.get(symbol, 50)
