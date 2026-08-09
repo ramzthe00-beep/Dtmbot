@@ -4,8 +4,8 @@ DTM Divergence Auto-Trading Bot - TheTrueTrade (نسخه هیبریدی)
 ====================================================================
 نسخه نهایی کامل — منطق واگرایی دقیقاً مطابق Pine Script:
 - Pivot: حالت سریع (5/3)
-- RSI/MACD در 3 کندل بعد از Pivot (مثل ta.valuewhen با rightBars)
-- شرط روند: تفاضل دو رگرسیون (مثل ta.linreg در Pine)
+- RSI/MACD در همان کندل Pivot (مثل Pine: rsiVal[rightBars])
+- شرط روند: تفاضل مقدار برازش دو رگرسیون (مثل ta.linreg در Pine)
 - فیلتر MTF: استفاده نمی‌شود
 - کندل تأییدیه: روی کندل تأیید (bar2 + RIGHT_BARS)
 - رفع Off-by-one در mid_peak/mid_trough
@@ -186,7 +186,6 @@ class TrueTradePrivateExchange:
         }
         response = self.session.request(method, f"{self.base_url}{uri}", headers=headers, json=data, timeout=15)
         
-        # ذخیره response برای لاگ دقیق خطا
         self._last_response = response
         
         if not response.ok:
@@ -234,7 +233,6 @@ class TrueTradePrivateExchange:
 
             logger.info(f"[BALANCE] Response: {json.dumps(data)[:500]}")
 
-            # /futures/assets یه دیکشنری با کلید "assets" برمیگردونه
             assets_list = []
             if isinstance(data, dict) and 'assets' in data:
                 assets_list = data['assets']
@@ -242,9 +240,7 @@ class TrueTradePrivateExchange:
                 assets_list = data
 
             for asset in assets_list:
-                # فیلد "symbol" داره نه "asset"
                 if asset.get('symbol') == 'USDT':
-                    # استفاده از availableBalance (موجودی قابل استفاده)
                     balance = float(asset.get('availableBalance', asset.get('totalAssets', 0)))
                     logger.info(f"[BALANCE] Futures USDT: {balance:.2f}")
                     return balance
@@ -265,14 +261,12 @@ class TrueTradePrivateExchange:
         - cost: مقدار مارجین (collateral)
         - leverage: عدد صحیح در محدوده مجاز بازار
         """
-        # رند کردن stopLoss و takeProfit با Tick Size
         if params:
             if 'stopLoss' in params:
                 params['stopLoss'] = round_price(params['stopLoss'], symbol)
             if 'takeProfit' in params:
                 params['takeProfit'] = round_price(params['takeProfit'], symbol)
 
-        # Precision برای این ارز
         prec = PRICE_PRECISION.get(symbol.upper(), 2)
 
         order_data = {
@@ -293,7 +287,6 @@ class TrueTradePrivateExchange:
             if 'takeProfit' in params:
                 order_data["takeProfit"] = f"{params['takeProfit']:.{prec}f}"
 
-        # لاگ کامل درخواست به تلگرام - فقط هنگام ثبت سفارش
         send_telegram_message(
             f"📤 ثبت سفارش - درخواست {HASHTAGS['order_request']}\n"
             f"━━━━━━━━━━━━━━━━━━━━━━\n"
@@ -310,7 +303,6 @@ class TrueTradePrivateExchange:
         try:
             result = self._request('POST', '/futures/positions', order_data)
 
-            # لاگ پاسخ موفق به تلگرام
             send_telegram_message(
                 f"📥 ثبت سفارش - پاسخ {HASHTAGS['order_response']}\n"
                 f"━━━━━━━━━━━━━━━━━━━━━━\n"
@@ -330,7 +322,6 @@ class TrueTradePrivateExchange:
             }
 
         except Exception as e:
-            # لاگ خطا با جزئیات کامل
             error_detail = ""
             error_body = ""
             status_code = ""
@@ -441,8 +432,14 @@ def find_pivot_low(low, left=5, right=3):
     return result
 
 # =====================================================================================
-# روند — دقیقاً مثل Pine Script: تفاضل دو ta.linreg
+# روند — دقیقاً مثل Pine Script: تفاضل مقدار برازش دو ta.linreg
 # =====================================================================================
+def _linreg_end(y):
+    """مقدار برازش شده رگرسیون خطی در آخرین نقطه (مثل ta.linreg با offset=0)"""
+    x = np.arange(len(y))
+    slope, intercept = np.polyfit(x, y, 1)
+    return intercept + slope * (len(y) - 1)
+
 def is_trending_up(close, ref_bar, lookback=TREND_LOOKBACK, slope_min_pct=TREND_SLOPE_MIN_PCT):
     """
     معادل isTrendingUp در Pine Script:
@@ -451,21 +448,16 @@ def is_trending_up(close, ref_bar, lookback=TREND_LOOKBACK, slope_min_pct=TREND_
     if ref_bar is None or ref_bar - 2 * lookback + 1 < 0:
         return False
     
-    # رگرسیون فعلی (lookback کندل منتهی به ref_bar)
     y_current = close.iloc[ref_bar - lookback + 1:ref_bar + 1].values
-    if len(y_current) < 2:
-        return False
-    
-    # رگرسیون قبلی (lookback کندل قبل از رگرسیون فعلی)
     y_past = close.iloc[ref_bar - 2 * lookback + 1:ref_bar - lookback + 1].values
-    if len(y_past) < 2:
+    
+    if len(y_current) < 2 or len(y_past) < 2:
         return False
     
-    slope_current = np.polyfit(np.arange(len(y_current)), y_current, 1)[0]
-    slope_past = np.polyfit(np.arange(len(y_past)), y_past, 1)[0]
+    fitted_end_current = _linreg_end(y_current)
+    fitted_end_past = _linreg_end(y_past)
     
-    # تفاضل دو رگرسیون (مثل Pine)
-    total_slope = slope_current * lookback - slope_past * lookback
+    total_slope = fitted_end_current - fitted_end_past
     
     avg = y_current.mean()
     if avg == 0:
@@ -481,21 +473,16 @@ def is_trending_down(close, ref_bar, lookback=TREND_LOOKBACK, slope_min_pct=TREN
     if ref_bar is None or ref_bar - 2 * lookback + 1 < 0:
         return False
     
-    # رگرسیون فعلی (lookback کندل منتهی به ref_bar)
     y_current = close.iloc[ref_bar - lookback + 1:ref_bar + 1].values
-    if len(y_current) < 2:
-        return False
-    
-    # رگرسیون قبلی (lookback کندل قبل از رگرسیون فعلی)
     y_past = close.iloc[ref_bar - 2 * lookback + 1:ref_bar - lookback + 1].values
-    if len(y_past) < 2:
+    
+    if len(y_current) < 2 or len(y_past) < 2:
         return False
     
-    slope_current = np.polyfit(np.arange(len(y_current)), y_current, 1)[0]
-    slope_past = np.polyfit(np.arange(len(y_past)), y_past, 1)[0]
+    fitted_end_current = _linreg_end(y_current)
+    fitted_end_past = _linreg_end(y_past)
     
-    # تفاضل دو رگرسیون (مثل Pine)
-    total_slope = slope_current * lookback - slope_past * lookback
+    total_slope = fitted_end_current - fitted_end_past
     
     avg = y_current.mean()
     if avg == 0:
@@ -1021,25 +1008,21 @@ def detect_signal(df, state, symbol, debug=False):
 
     for i in range(start_bar, last_valid_pivot_index + 1):
         ts = closed_df_indexed.index[i]
+        # ✅ RSI/MACD در همان کندل Pivot (مثل Pine: rsiVal[rightBars])
         if not pd.isna(pivot_high.iloc[i]) and ts not in existing_high_ts:
-            # ✅ RSI/MACD در ۳ کندل بعد از Pivot (مثل Pine: ta.valuewhen با rightBars)
-            idx_rsi_macd = i + RIGHT_BARS
-            if idx_rsi_macd < n:
-                new_pivots_high.append({
-                    'ts': ts, 'price': pivot_high.iloc[i],
-                    'rsi': rsi_val.iloc[idx_rsi_macd],
-                    'macdline': macd_line.iloc[idx_rsi_macd],
-                    'hist': hist_line.iloc[idx_rsi_macd]
-                })
+            new_pivots_high.append({
+                'ts': ts, 'price': pivot_high.iloc[i],
+                'rsi': rsi_val.iloc[i],
+                'macdline': macd_line.iloc[i],
+                'hist': hist_line.iloc[i]
+            })
         if not pd.isna(pivot_low.iloc[i]) and ts not in existing_low_ts:
-            idx_rsi_macd = i + RIGHT_BARS
-            if idx_rsi_macd < n:
-                new_pivots_low.append({
-                    'ts': ts, 'price': pivot_low.iloc[i],
-                    'rsi': rsi_val.iloc[idx_rsi_macd],
-                    'macdline': macd_line.iloc[idx_rsi_macd],
-                    'hist': hist_line.iloc[idx_rsi_macd]
-                })
+            new_pivots_low.append({
+                'ts': ts, 'price': pivot_low.iloc[i],
+                'rsi': rsi_val.iloc[i],
+                'macdline': macd_line.iloc[i],
+                'hist': hist_line.iloc[i]
+            })
 
     if n > 0:
         state.last_processed_ts = closed_df_indexed.index[min(last_valid_pivot_index, n-1)]
@@ -1303,7 +1286,6 @@ def analyze_and_execute():
                 send_telegram_message(f"⚡ Pivot جدید — {symbol} {HASHTAGS['pivot']}\n💰 {cp:.4f}\n⏳ ~۲ دقیقه تا تأیید\n🕒 {format_iran_time()}")
 
             if signal and stop and target:
-                # رند کردن قیمت‌ها با Tick Size
                 entry = round_price(entry, symbol)
                 stop = round_price(stop, symbol)
                 target = round_price(target, symbol)
@@ -1315,7 +1297,6 @@ def analyze_and_execute():
                 direction_emoji = "🟢" if signal == "BUY" else "🔴"
                 details_text = "\n".join([f"{i+1}. {d}" for i, d in enumerate(details)]) if details else ""
 
-                # شماره سیگنال
                 signal_number = get_next_signal_number()
 
                 TARGET_RISK = 3.5
@@ -1425,10 +1406,8 @@ def health():
 if __name__ == "__main__":
     logger.info("DTM Bot Starting...")
     
-    # بارگذاری شمارنده سیگنال از تاریخچه
     load_signal_counter()
 
-    # پیام راه‌اندازی با لیست همه هشتگ‌ها
     hashtag_list = "\n".join([f"• {v} → {k}" for k, v in HASHTAGS.items()])
     send_telegram_message(
         f"🤖 DTM Pro — آنلاین {HASHTAGS['startup']}\n\n"
