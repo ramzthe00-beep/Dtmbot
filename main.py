@@ -475,7 +475,7 @@ def calc_rsi(close, length=14):
             rsi.iloc[i] = 100.0 - (100.0 / (1.0 + rs.iloc[i]))
     
     # Forward fill مانند Pine (نقاط NaN را با آخرین مقدار معتبر پر کن)
-    rsi = rsi.fillna(method='ffill').fillna(50.0)
+    rsi = rsi.ffill().fillna(50.0)
     return rsi
 
 def calc_macd(close, fast=12, slow=26, signal=9):
