@@ -1294,7 +1294,7 @@ def track_open_signals(exchange):
         return
     for trade in open_trades_in_history:
         symbol = trade['symbol']
-        direction = trade['direction']
+        direction = "LONG" if trade['direction'] == "BUY" else "SHORT"
         signal_time = trade['signal_time']
         matching_open_pos = None
         for pos in open_positions:
