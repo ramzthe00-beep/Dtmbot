@@ -17,7 +17,7 @@ DTM Divergence Auto-Trading Bot - TheTrueTrade (نسخه هیبریدی)
 - **FIXED [BUG A]**: check_macd_color_change — معادل دقیق Pine (existence check ساده)
 - رفع Gating: RSI + MACD Line + MACD Histogram هر سه اجباری
 - رفع فرمول فیبوناچی
-- رفع تکرار سیگنال: فقط وقتی پیوت دوم تازه شکل گرفته باشد
+- **FIXED [CATCH-UP]**: بررسی همه پیوت‌های جدید با پیوت قبلی‌شان (حلقه روی new_pivots)
 - رفع فیلتر روند برای Hidden Divergence
 - **FIXED [BUG B]**: FIB_SEARCH_BARS = 100 (مطابق Pine)
 - **FIXED [ENHANCEMENT C]**: ATR در بار تأیید (confirm bar) خوانده میشه
@@ -37,7 +37,7 @@ DTM Divergence Auto-Trading Bot - TheTrueTrade (نسخه هیبریدی)
 - پیام سیگنال انگلیسی (بدون بخش دلایل)
 - گزارش واقعی صرافی (معاملات + موجودی)
 - **SECURITY**: کلیدهای API فقط از متغیر محیطی خوانده میشن
-- **DEBUG**: Full Debug Log (کنسول + فایل `full_debug_log.txt`)
+- **DEBUG**: Full Debug Log (فایل `full_debug_log.txt`)
 """
 
 import os
@@ -439,7 +439,6 @@ def format_iran_date(dt=None):
 def calc_rma(series, length):
     """
     معادل دقیق ta.rma (Wilder Smoothing) در Pine Script.
-    Pine: na «آلوده‌کننده» است نه skip-شونده.
     """
     n = len(series)
     rma = pd.Series(np.nan, index=series.index)
@@ -1105,11 +1104,11 @@ def save_debug_log_to_file(symbol, debug_log_lines):
         logger.error(f"[DEBUG FILE] Error writing log: {e}")
 
 # =====================================================================================
-# تابع تشخیص سیگنال (با Full Debug Log — فقط فایل، نه کنسول)
+# تابع تشخیص سیگنال (با بررسی همه پیوت‌های جدید + Full Debug Log)
 # =====================================================================================
 def detect_signal(df, state, symbol, debug=False):
     debug_log = []
-    debug_file_lines = []  # فقط برای فایل
+    debug_file_lines = []
     def log(msg):
         debug_log.append(msg)
         debug_file_lines.append(msg)
@@ -1209,13 +1208,20 @@ def detect_signal(df, state, symbol, debug=False):
     buy_stop = buy_target = sell_stop = sell_target = None
     buy_details = sell_details = []
 
-    # BUY
+    # BUY — بررسی همه پیوت‌های جدید (حلقه روی new_pivots_low)
     if len(new_pivots_low) > 0 and len(state.pivot_lows) >= 2:
-        pl_1, pl_2 = state.pivot_lows[-2], state.pivot_lows[-1]
-        bar1 = resolve_bar_from_ts(closed_df_indexed, pl_1['ts'])
-        bar2 = resolve_bar_from_ts(closed_df_indexed, pl_2['ts'])
+        for new_pl in new_pivots_low:
+            idx = next((i for i, p in enumerate(state.pivot_lows) if p['ts'] == new_pl['ts']), None)
+            if idx is None or idx == 0:
+                continue
+            pl_1 = state.pivot_lows[idx - 1]
+            pl_2 = state.pivot_lows[idx]
+            bar1 = resolve_bar_from_ts(closed_df_indexed, pl_1['ts'])
+            bar2 = resolve_bar_from_ts(closed_df_indexed, pl_2['ts'])
 
-        if bar1 is not None and bar2 is not None:
+            if bar1 is None or bar2 is None:
+                continue
+
             is_classic_buy = pl_2['price'] < pl_1['price']
             is_hidden_buy = pl_2['price'] > pl_1['price']
 
@@ -1234,13 +1240,6 @@ def detect_signal(df, state, symbol, debug=False):
                         pl_1, pl_2, "BUY", bar1, bar2, hist_line, high, low, closed_df_indexed, atr14
                     )
                     buy_emoji, buy_label = classify_signal(score)
-                    buy_score = score
-                    buy_details = details
-                    div_type = "Classic" if is_classic_buy else "Hidden"
-                    log(f"   🔵 {div_type} BUY score={score}/5 {'✅' if buy_emoji else '❌'}")
-                    for d in details:
-                        log(f"      {d}")
-
                     if buy_emoji and score >= 3:
                         confirm_bar_buy = min(bar2 + RIGHT_BARS, len(atr14) - 1)
                         atr_at_confirm = atr14.iloc[confirm_bar_buy]
@@ -1250,17 +1249,26 @@ def detect_signal(df, state, symbol, debug=False):
                         if stop and tp_raw:
                             buy_stop, buy_target = stop, resolve_final_target(entry_price, stop, tp_raw, "long")
                             buy_signal = "BUY"
+                            buy_score = score
+                            buy_details = details
+                            log(f"   🔵 BUY score={score}/5 ✅ SIGNAL")
                             log(f"   Entry={entry_price:.4f}, SL={stop:.4f}, TP={buy_target:.4f}")
-        else:
-            log(f"   🔵 BUY: bar1/bar2 قابل resolve نبود")
+                            break  # فقط اولین سیگنال معتبر
 
-    # SELL
-    if len(new_pivots_high) > 0 and len(state.pivot_highs) >= 2:
-        ph_1, ph_2 = state.pivot_highs[-2], state.pivot_highs[-1]
-        bar1 = resolve_bar_from_ts(closed_df_indexed, ph_1['ts'])
-        bar2 = resolve_bar_from_ts(closed_df_indexed, ph_2['ts'])
+    # SELL — بررسی همه پیوت‌های جدید (حلقه روی new_pivots_high)
+    if not buy_signal and len(new_pivots_high) > 0 and len(state.pivot_highs) >= 2:
+        for new_ph in new_pivots_high:
+            idx = next((i for i, p in enumerate(state.pivot_highs) if p['ts'] == new_ph['ts']), None)
+            if idx is None or idx == 0:
+                continue
+            ph_1 = state.pivot_highs[idx - 1]
+            ph_2 = state.pivot_highs[idx]
+            bar1 = resolve_bar_from_ts(closed_df_indexed, ph_1['ts'])
+            bar2 = resolve_bar_from_ts(closed_df_indexed, ph_2['ts'])
 
-        if bar1 is not None and bar2 is not None:
+            if bar1 is None or bar2 is None:
+                continue
+
             is_classic_sell = ph_2['price'] > ph_1['price']
             is_hidden_sell = ph_2['price'] < ph_1['price']
 
@@ -1279,13 +1287,6 @@ def detect_signal(df, state, symbol, debug=False):
                         ph_1, ph_2, "SELL", bar1, bar2, hist_line, high, low, closed_df_indexed, atr14
                     )
                     sell_emoji, sell_label = classify_signal(score)
-                    sell_score = score
-                    sell_details = details
-                    div_type = "Classic" if is_classic_sell else "Hidden"
-                    log(f"   🔴 {div_type} SELL score={score}/5 {'✅' if sell_emoji else '❌'}")
-                    for d in details:
-                        log(f"      {d}")
-
                     if sell_emoji and score >= 3:
                         confirm_bar_sell = min(bar2 + RIGHT_BARS, len(atr14) - 1)
                         atr_at_confirm = atr14.iloc[confirm_bar_sell]
@@ -1295,15 +1296,17 @@ def detect_signal(df, state, symbol, debug=False):
                         if stop and tp_raw:
                             sell_stop, sell_target = stop, resolve_final_target(entry_price, stop, tp_raw, "short")
                             sell_signal = "SELL"
+                            sell_score = score
+                            sell_details = details
+                            log(f"   🔴 SELL score={score}/5 ✅ SIGNAL")
                             log(f"   Entry={entry_price:.4f}, SL={stop:.4f}, TP={sell_target:.4f}")
-        else:
-            log(f"   🔴 SELL: bar1/bar2 قابل resolve نبود")
+                            break  # فقط اولین سیگنال معتبر
 
     if not buy_signal and not sell_signal:
         log(f"   ⚪ No signal")
 
     # =========================================================================
-    # DEBUG LOG — کامل (فقط فایل، نه کنسول Railway)
+    # DEBUG LOG — کامل (فقط فایل)
     # =========================================================================
     log("   " + "=" * 70)
     log("   🔬 FULL DEBUG LOG")
@@ -1505,10 +1508,10 @@ def detect_signal(df, state, symbol, debug=False):
     
     log("   " + "=" * 70)
 
-    # ذخیره در فایل (همه Debug Log کامل)
+    # ذخیره در فایل
     save_debug_log_to_file(symbol, debug_file_lines)
 
-    # لاگ تلگرام (خلاصه، بدون Debug کامل)
+    # لاگ تلگرام (خلاصه)
     current_time = time.time()
     should_send = False
     if state.telegram_log_count < 5:
