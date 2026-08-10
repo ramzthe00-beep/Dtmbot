@@ -14,13 +14,16 @@ DTM Divergence Auto-Trading Bot - TheTrueTrade (نسخه هیبریدی)
 - کندل تأییدیه: روی کندل تأیید (bar2 + RIGHT_BARS)
 - رفع Off-by-one در mid_peak/mid_trough
 - رفع فرمول avg_body در Price Action
-- رفع باگ منطق تغییر رنگ MACD Histogram — **FIXED**: الگوی ۳ روندی (سبز-قرمز-سبز / قرمز-سبز-قرمز)
+- **FIXED [BUG A]**: check_macd_color_change — معادل دقیق Pine (existence check ساده)
 - رفع Gating: RSI + MACD Line + MACD Histogram هر سه اجباری
 - رفع فرمول فیبوناچی
 - رفع تکرار سیگنال: فقط وقتی پیوت دوم تازه شکل گرفته باشد
 - رفع فیلتر روند برای Hidden Divergence
+- **FIXED [BUG B]**: FIB_SEARCH_BARS = 100 (مطابق Pine)
+- **FIXED [ENHANCEMENT C]**: ATR در بار تأیید (confirm bar) خوانده میشه
+- **FIXED [ENHANCEMENT D]**: Bar-State Safety Net (حذف کندل باز)
+- **FIXED [RIGOR]**: calc_rma با تطبیق دقیق معناشناسی na در Pine
 - State persistence — پیوت‌ها در فایل ذخیره میشن
-- FIB_SEARCH_BARS = 500
 - اعتبارسنجی df.iloc[:-1]
 - fetch_balance از /futures/assets
 - استفاده از cost (مارجین) برای MARKET order
@@ -34,6 +37,7 @@ DTM Divergence Auto-Trading Bot - TheTrueTrade (نسخه هیبریدی)
 - پیام سیگنال انگلیسی (بدون بخش دلایل)
 - گزارش واقعی صرافی (معاملات + موجودی)
 - **SECURITY**: کلیدهای API فقط از متغیر محیطی خوانده میشن
+- **DEBUG**: Full Debug Log (کنسول فقط، نه تلگرام)
 """
 
 import os
@@ -114,8 +118,10 @@ TREND_SLOPE_MIN_PCT = 0.05
 FIB_USE_618 = True
 FIB_USE_786 = True
 FIB_TOLERANCE_PCT = 0.5
-FIB_SEARCH_BARS = 500
+FIB_SEARCH_BARS = 100  # [BUG B - FIXED] مطابق Pine (نه 500)
 STOP_BUFFER_PCT = 0.05
+
+LEFT_BARS = 5
 RIGHT_BARS = 3
 
 SHADOW_TO_BODY_RATIO = 2.0
@@ -126,7 +132,6 @@ BIG_CANDLE_MULTIPLIER = 1.5
 
 API_RETURNS_OPEN_CANDLE = False
 
-# FIXED: افزایش به 5000 (معادل حساب رایگان TradingView)
 HISTORY_BARS = 5000
 
 # =====================================================================================
@@ -173,7 +178,7 @@ class TrueTradePublicData:
                 return None
 
             df = pd.DataFrame({
-                'timestamp': pd.to_datetime(data['t'], unit='s'),
+                'timestamp': pd.to_datetime(data['t'], unit='s', utc=True),
                 'open': pd.to_numeric(data['o']),
                 'high': pd.to_numeric(data['h']),
                 'low': pd.to_numeric(data['l']),
@@ -431,17 +436,32 @@ def format_iran_date(dt=None):
 # =====================================================================================
 # توابع محاسباتی پایه (Pine-Exact)
 # =====================================================================================
+# [RIGOR FIX] calc_rma با تطبیق دقیق معناشناسی na در Pine
 def calc_rma(series, length):
-    """معادل دقیق ta.rma (Wilder Smoothing) در Pine Script — seed = SMA اولین length مقدار"""
-    alpha = 1.0 / length
+    """
+    معادل دقیق ta.rma (Wilder Smoothing) در Pine Script.
+    Pine: na «آلوده‌کننده» است نه skip-شونده.
+    RMA فقط وقتی seed میشه که یک پنجره کامل بدون na پیدا بشه.
+    """
+    n = len(series)
     rma = pd.Series(np.nan, index=series.index)
-    if len(series) < length:
+    if n == 0:
         return rma
-    seed = series.iloc[:length].mean()
-    rma.iloc[length - 1] = seed
-    prev = seed
-    for i in range(length, len(series)):
-        prev = alpha * series.iloc[i] + (1 - alpha) * prev
+    alpha = 1.0 / length
+    vals = series.to_numpy(dtype=float)
+
+    leading_na = 0
+    while leading_na < n and np.isnan(vals[leading_na]):
+        leading_na += 1
+
+    seed_idx = leading_na + length - 1
+    if seed_idx >= n:
+        return rma
+
+    prev = vals[seed_idx - length + 1: seed_idx + 1].mean()
+    rma.iloc[seed_idx] = prev
+    for i in range(seed_idx + 1, n):
+        prev = alpha * vals[i] + (1 - alpha) * prev
         rma.iloc[i] = prev
     return rma
 
@@ -582,69 +602,26 @@ def resolve_bar_from_ts(df_indexed, ts):
         return None
     return df_indexed.index.get_loc(ts)
 
-# FIXED: الگوی ۳ روندی برای تغییر رنگ MACD
+# [BUG A - FIXED] تابع تغییر رنگ MACD Histogram — معادل دقیق Pine
 def check_macd_color_change(hist_series, bar1, bar2, need_negative_phase):
     """
-    بررسی تغییر رنگ MACD histogram با الگوی ۳ روندی.
-    فقط روندهای بسته‌شده بررسی میشن (روند فعلی که هنوز تغییر رنگ نداده، نادیده گرفته میشه).
-    
-    برای BUY (need_negative_phase=False): باید الگوی سبز-قرمز-سبز دیده بشه
-    برای SELL (need_negative_phase=True): باید الگوی قرمز-سبز-قرمز دیده بشه
-    
-    توجه: ۱ = روند مثبت (سبز)، -۱ = روند منفی (قرمز)
+    معادل دقیق تابع Pine: یه existence check ساده.
+    می‌پرسه: «آیا بین دو پیوت حداقل یک کندل با علامت مخالف وجود دارد؟»
     """
-    if bar1 is None or bar2 is None or bar2 <= bar1 + 1:
+    if bar1 is None or bar2 is None or bar2 <= bar1:
         return False
-    
-    # فقط تا کندل بسته‌شده (آخرین کندل کامل — کندل فعلی که هنوز بازه حذف میشه)
-    last_closed = len(hist_series) - 2
-    if last_closed <= bar1 + 1:
+
+    lo = bar1 + 1
+    hi = bar2 - 1
+    if hi < lo:
         return False
-    
-    # محدوده بررسی: از bar1+1 تا last_closed
-    window = hist_series.iloc[bar1 + 1:last_closed + 1]
-    if len(window) < 3:
+    if lo < 0 or hi >= len(hist_series):
         return False
-    
-    # شناسایی روندها (تغییر فازهای مثبت/منفی)
-    phases = []
-    current_phase = 1 if window.iloc[0] > 0 else (-1 if window.iloc[0] < 0 else 0)
-    
-    for i in range(1, len(window)):
-        val = window.iloc[i]
-        if val == 0:
-            continue
-        new_phase = 1 if val > 0 else -1
-        if new_phase != current_phase:
-            phases.append(current_phase)
-            current_phase = new_phase
-    
-    # اضافه کردن آخرین روند بسته‌شده
-    if current_phase != 0:
-        phases.append(current_phase)
-    
-    # بررسی ۳ روند آخر
-    if len(phases) < 3:
-        return False
-    
-    last_three = phases[-3:]
-    
+
+    window = hist_series.iloc[lo:hi + 1]
     if need_negative_phase:
-        # SELL: نیاز به الگوی قرمز(+۱)-سبز(-۱)-قرمز(+۱)
-        if last_three == [1, -1, 1]:
-            return True
-        # یا الگوی سبز(-۱)-قرمز(+۱)-سبز(-۱)
-        if last_three == [-1, 1, -1]:
-            return True
-    else:
-        # BUY: نیاز به الگوی سبز(-۱)-قرمز(+۱)-سبز(-۱)
-        if last_three == [-1, 1, -1]:
-            return True
-        # یا الگوی قرمز(+۱)-سبز(-۱)-قرمز(+۱)
-        if last_three == [1, -1, 1]:
-            return True
-    
-    return False
+        return bool((window < 0).any())
+    return bool((window > 0).any())
 
 def find_trend_start_low(low_series, ref_bar, search_bars=FIB_SEARCH_BARS):
     """پیدا کردن پایین‌ترین کف در پنجره جستجو (معادل ta.lowest در Pine)"""
@@ -1120,7 +1097,7 @@ def run_startup_diagnostic():
     logger.info("Startup Diagnostic Complete")
 
 # =====================================================================================
-# تابع تشخیص سیگنال
+# تابع تشخیص سیگنال (با Full Debug Log — فقط کنسول)
 # =====================================================================================
 def detect_signal(df, state, symbol, debug=False):
     debug_log = []
@@ -1137,6 +1114,17 @@ def detect_signal(df, state, symbol, debug=False):
     else:
         closed_df_indexed = df.copy()
         log(f"   API returns only closed candles — using all {len(closed_df_indexed)} candles")
+    
+    # [ENHANCEMENT D] Bar-State Safety Net
+    if len(closed_df_indexed) > 0:
+        last_bar_start = closed_df_indexed.index[-1]
+        if last_bar_start.tzinfo is None:
+            last_bar_start = last_bar_start.tz_localize('UTC')
+        last_bar_end = last_bar_start + pd.Timedelta(minutes=1)
+        now_utc = pd.Timestamp.now(tz='UTC')
+        if now_utc < last_bar_end:
+            log(f"   ⏳ آخرین کندل ({last_bar_start}) هنوز کامل نشده — حذف شد")
+            closed_df_indexed = closed_df_indexed.iloc[:-1].copy()
     
     # FIXED: برش به 5000 کندل آخر (معادل TradingView رایگان)
     if len(closed_df_indexed) > HISTORY_BARS:
@@ -1246,8 +1234,11 @@ def detect_signal(df, state, symbol, debug=False):
                         log(f"      {d}")
 
                     if buy_emoji and score >= 3:
+                        # [ENHANCEMENT C] ATR در بار تأیید
+                        confirm_bar_buy = min(bar2 + RIGHT_BARS, len(atr14) - 1)
+                        atr_at_confirm = atr14.iloc[confirm_bar_buy]
                         stop, tp_raw, _ = compute_stop_and_targets(
-                            state.pivot_highs, state.pivot_lows, "long", closed_df_indexed, atr14.iloc[-1]
+                            state.pivot_highs, state.pivot_lows, "long", closed_df_indexed, atr_at_confirm
                         )
                         if stop and tp_raw:
                             buy_stop, buy_target = stop, resolve_final_target(entry_price, stop, tp_raw, "long")
@@ -1289,8 +1280,10 @@ def detect_signal(df, state, symbol, debug=False):
                         log(f"      {d}")
 
                     if sell_emoji and score >= 3:
+                        confirm_bar_sell = min(bar2 + RIGHT_BARS, len(atr14) - 1)
+                        atr_at_confirm = atr14.iloc[confirm_bar_sell]
                         stop, tp_raw, _ = compute_stop_and_targets(
-                            state.pivot_highs, state.pivot_lows, "short", closed_df_indexed, atr14.iloc[-1]
+                            state.pivot_highs, state.pivot_lows, "short", closed_df_indexed, atr_at_confirm
                         )
                         if stop and tp_raw:
                             sell_stop, sell_target = stop, resolve_final_target(entry_price, stop, tp_raw, "short")
@@ -1302,7 +1295,220 @@ def detect_signal(df, state, symbol, debug=False):
     if not buy_signal and not sell_signal:
         log(f"   ⚪ No signal")
 
-    # لاگ تلگرام
+    # =========================================================================
+    # DEBUG LOG — کامل (همه چیز: روند بررسی، تأیید/رد، مشخصات کندل)
+    # فقط توی کنسول Railway، به تلگرام فرستاده نمیشه
+    # =========================================================================
+    log("   " + "=" * 70)
+    log("   🔬 FULL DEBUG LOG")
+    log("   " + "=" * 70)
+    
+    # ── اطلاعات کلی ────────────────────────────────────────────────────────
+    log(f"   📊 GENERAL:")
+    log(f"      Symbol: {symbol}")
+    log(f"      Time: {format_iran_time()}")
+    log(f"      Total Candles (n): {n}")
+    log(f"      Last Valid Pivot Index: {last_valid_pivot_index}")
+    log(f"      Start Bar: {start_bar}")
+    log(f"      New Pivot Highs: {len(new_pivots_high)}")
+    log(f"      New Pivot Lows: {len(new_pivots_low)}")
+    log(f"      Total Pivot Highs in Memory: {len(state.pivot_highs)}")
+    log(f"      Total Pivot Lows in Memory: {len(state.pivot_lows)}")
+    log("")
+    
+    # ── کندل فعلی و ۵ کندل قبلی (OHLCV + shadows) ─────────────────────────
+    log(f"   🕯️ LAST 5 CANDLES (newest first):")
+    for i in range(min(5, n)):
+        idx = n - 1 - i
+        if idx >= 0:
+            c = closed_df.iloc[idx]
+            body = abs(c['close'] - c['open'])
+            upper_shadow = c['high'] - max(c['close'], c['open'])
+            lower_shadow = min(c['close'], c['open']) - c['low']
+            candle_type = "🟢" if c['close'] >= c['open'] else "🔴"
+            ts = closed_df_indexed.index[idx]
+            log(f"      [{idx}] {candle_type} {ts}")
+            log(f"         O={c['open']:.4f} H={c['high']:.4f} L={c['low']:.4f} C={c['close']:.4f}")
+            log(f"         Body={body:.4f} | UpperShadow={upper_shadow:.4f} | LowerShadow={lower_shadow:.4f}")
+            log(f"         Volume={c['volume']:.2f}")
+    log("")
+    
+    # ── اندیکاتورهای فعلی ──────────────────────────────────────────────────
+    log(f"   📈 CURRENT INDICATORS:")
+    log(f"      Entry Price (close[-1]): {entry_price:.4f}")
+    log(f"      RSI(14)[-1]: {rsi_val.iloc[-1]:.2f}")
+    log(f"      RSI(14)[-2]: {rsi_val.iloc[-2]:.2f}")
+    log(f"      RSI(14)[-3]: {rsi_val.iloc[-3]:.2f}")
+    log(f"      MACD Line[-1]: {macd_line.iloc[-1]:.6f}")
+    log(f"      MACD Signal[-1]: {signal_line.iloc[-1]:.6f}")
+    log(f"      MACD Hist[-1]: {hist_line.iloc[-1]:.6f} ({'🟢 POS' if hist_line.iloc[-1] > 0 else '🔴 NEG' if hist_line.iloc[-1] < 0 else '⚪ ZERO'})")
+    log(f"      MACD Hist[-2]: {hist_line.iloc[-2]:.6f} ({'🟢 POS' if hist_line.iloc[-2] > 0 else '🔴 NEG' if hist_line.iloc[-2] < 0 else '⚪ ZERO'})")
+    log(f"      MACD Hist[-3]: {hist_line.iloc[-3]:.6f} ({'🟢 POS' if hist_line.iloc[-3] > 0 else '🔴 NEG' if hist_line.iloc[-3] < 0 else '⚪ ZERO'})")
+    log(f"      ATR(14)[-1]: {atr14.iloc[-1]:.4f}")
+    log("")
+    
+    # ── ۳ پیوت High آخر ────────────────────────────────────────────────────
+    log(f"   🔺 LAST 3 PIVOT HIGHS (newest first):")
+    for i, p in enumerate(reversed(state.pivot_highs[-3:])):
+        bar = resolve_bar_from_ts(closed_df_indexed, p['ts'])
+        log(f"      PH[{i}]: bar={bar}, ts={p['ts']}")
+        log(f"         Price={p['price']:.4f}, RSI={p['rsi']:.2f}, MACDLine={p['macdline']:.6f}, Hist={p['hist']:.6f}")
+    log("")
+    
+    # ── ۳ پیوت Low آخر ─────────────────────────────────────────────────────
+    log(f"   🔻 LAST 3 PIVOT LOWS (newest first):")
+    for i, p in enumerate(reversed(state.pivot_lows[-3:])):
+        bar = resolve_bar_from_ts(closed_df_indexed, p['ts'])
+        log(f"      PL[{i}]: bar={bar}, ts={p['ts']}")
+        log(f"         Price={p['price']:.4f}, RSI={p['rsi']:.2f}, MACDLine={p['macdline']:.6f}, Hist={p['hist']:.6f}")
+    log("")
+    
+    # ── پیوت‌های جدید این چرخه ─────────────────────────────────────────────
+    if new_pivots_high or new_pivots_low:
+        log(f"   🆕 NEW PIVOTS THIS CYCLE:")
+        for p in new_pivots_high:
+            log(f"      NEW PH: ts={p['ts']}, price={p['price']:.4f}")
+        for p in new_pivots_low:
+            log(f"      NEW PL: ts={p['ts']}, price={p['price']:.4f}")
+        log("")
+    
+    # ── بررسی واگرایی BUY ──────────────────────────────────────────────────
+    log(f"   🔵 BUY DIVERGENCE CHECK:")
+    if len(state.pivot_lows) >= 2:
+        pl1 = state.pivot_lows[-2]
+        pl2 = state.pivot_lows[-1]
+        b1 = resolve_bar_from_ts(closed_df_indexed, pl1['ts'])
+        b2 = resolve_bar_from_ts(closed_df_indexed, pl2['ts'])
+        
+        is_classic = pl2['price'] < pl1['price']
+        is_hidden = pl2['price'] > pl1['price']
+        
+        log(f"      PL1 (older): bar={b1}, price={pl1['price']:.4f}, RSI={pl1['rsi']:.2f}, MACDLine={pl1['macdline']:.6f}, Hist={pl1['hist']:.6f}")
+        log(f"      PL2 (newer): bar={b2}, price={pl2['price']:.4f}, RSI={pl2['rsi']:.2f}, MACDLine={pl2['macdline']:.6f}, Hist={pl2['hist']:.6f}")
+        log(f"      Classic (PL2 < PL1): {'✅ YES' if is_classic else '❌ NO'}")
+        log(f"      Hidden (PL2 > PL1): {'✅ YES' if is_hidden else '❌ NO'}")
+        
+        if is_classic:
+            trend_ok = is_trending_down(close, b1, TREND_LOOKBACK, TREND_SLOPE_MIN_PCT)
+            log(f"      Trend Check (Downtrend): {'✅ PASSED' if trend_ok else '❌ FAILED'}")
+            if trend_ok:
+                rsi_ok = pl2['rsi'] > pl1['rsi']
+                log(f"      RSI Divergence (PL2.RSI > PL1.RSI): {'✅ PASSED' if rsi_ok else '❌ FAILED'} ({pl1['rsi']:.2f} → {pl2['rsi']:.2f})")
+                macdline_ok = pl2['macdline'] > pl1['macdline']
+                log(f"      MACD Line Div (PL2.MACD > PL1.MACD): {'✅ PASSED' if macdline_ok else '❌ FAILED'} ({pl1['macdline']:.6f} → {pl2['macdline']:.6f})")
+                hist_shape_ok = pl2['hist'] > pl1['hist']
+                log(f"      Hist Shape: {'✅ PASSED' if hist_shape_ok else '❌ FAILED'} ({pl1['hist']:.6f} → {pl2['hist']:.6f})")
+                both_same_sign = pl1['hist'] < 0 and pl2['hist'] < 0
+                log(f"      Both Negative (same sign): {'✅ YES' if both_same_sign else '❌ NO'}")
+                color_changed = check_macd_color_change(hist_line, b1, b2, need_negative_phase=False)
+                log(f"      MACD Color Change (existence check): {'✅ PASSED' if color_changed else '❌ FAILED'}")
+                base3 = rsi_ok and macdline_ok and (hist_shape_ok and both_same_sign and color_changed)
+                log(f"      Base 3 Gating: {'✅ ALL PASSED' if base3 else '❌ FAILED'}")
+                if base3:
+                    trend_start = find_trend_start_high(high, b1)
+                    fib_ok = check_fib_level(trend_start, pl1['price'], pl2['price'], is_retrace_down=False)
+                    log(f"      Fibonacci (0.618/0.786): {'✅ PASSED' if fib_ok else '❌ FAILED'}")
+                    confirm_bar = b2 + RIGHT_BARS
+                    if confirm_bar < len(closed_df_indexed):
+                        pa_ok, pa_reasons = check_price_action(closed_df_indexed, confirm_bar, "BUY", atr14.iloc[confirm_bar])
+                        log(f"      Price Action (bar={confirm_bar}): {'✅ PASSED' if pa_ok else '❌ FAILED'} {pa_reasons if pa_ok else ''}")
+                    else:
+                        pa_ok = False
+                        log(f"      Price Action: ❌ FAILED (confirm_bar={confirm_bar} out of range)")
+                    score = 3 + (1 if fib_ok else 0) + (1 if pa_ok else 0)
+                    log(f"      → SCORE: {score}/5 {'✅ SIGNAL' if score >= 3 else '❌ NO SIGNAL (need ≥3)'}")
+        
+        if is_hidden:
+            log(f"      Trend Check: ⏭️ SKIPPED (Hidden)")
+            rsi_ok = pl2['rsi'] < pl1['rsi']
+            macdline_ok = pl2['macdline'] < pl1['macdline']
+            log(f"      Hidden RSI (PL2.RSI < PL1.RSI): {'✅ PASSED' if rsi_ok else '❌ FAILED'}")
+            log(f"      Hidden MACD Line (PL2.MACD < PL1.MACD): {'✅ PASSED' if macdline_ok else '❌ FAILED'}")
+            log(f"      → Hidden Signal: {'✅' if (rsi_ok or macdline_ok) else '❌'}")
+    else:
+        log(f"      ⏭️ SKIPPED (not enough pivot lows: {len(state.pivot_lows)})")
+    log("")
+    
+    # ── بررسی واگرایی SELL ─────────────────────────────────────────────────
+    log(f"   🔴 SELL DIVERGENCE CHECK:")
+    if len(state.pivot_highs) >= 2:
+        ph1 = state.pivot_highs[-2]
+        ph2 = state.pivot_highs[-1]
+        b1 = resolve_bar_from_ts(closed_df_indexed, ph1['ts'])
+        b2 = resolve_bar_from_ts(closed_df_indexed, ph2['ts'])
+        
+        is_classic = ph2['price'] > ph1['price']
+        is_hidden = ph2['price'] < ph1['price']
+        
+        log(f"      PH1 (older): bar={b1}, price={ph1['price']:.4f}, RSI={ph1['rsi']:.2f}, MACDLine={ph1['macdline']:.6f}, Hist={ph1['hist']:.6f}")
+        log(f"      PH2 (newer): bar={b2}, price={ph2['price']:.4f}, RSI={ph2['rsi']:.2f}, MACDLine={ph2['macdline']:.6f}, Hist={ph2['hist']:.6f}")
+        log(f"      Classic (PH2 > PH1): {'✅ YES' if is_classic else '❌ NO'}")
+        log(f"      Hidden (PH2 < PH1): {'✅ YES' if is_hidden else '❌ NO'}")
+        
+        if is_classic:
+            trend_ok = is_trending_up(close, b1, TREND_LOOKBACK, TREND_SLOPE_MIN_PCT)
+            log(f"      Trend Check (Uptrend): {'✅ PASSED' if trend_ok else '❌ FAILED'}")
+            if trend_ok:
+                rsi_ok = ph2['rsi'] < ph1['rsi']
+                log(f"      RSI Divergence (PH2.RSI < PH1.RSI): {'✅ PASSED' if rsi_ok else '❌ FAILED'} ({ph1['rsi']:.2f} → {ph2['rsi']:.2f})")
+                macdline_ok = ph2['macdline'] < ph1['macdline']
+                log(f"      MACD Line Div (PH2.MACD < PH1.MACD): {'✅ PASSED' if macdline_ok else '❌ FAILED'} ({ph1['macdline']:.6f} → {ph2['macdline']:.6f})")
+                hist_shape_ok = ph2['hist'] < ph1['hist']
+                log(f"      Hist Shape: {'✅ PASSED' if hist_shape_ok else '❌ FAILED'} ({ph1['hist']:.6f} → {ph2['hist']:.6f})")
+                both_same_sign = ph1['hist'] > 0 and ph2['hist'] > 0
+                log(f"      Both Positive (same sign): {'✅ YES' if both_same_sign else '❌ NO'}")
+                color_changed = check_macd_color_change(hist_line, b1, b2, need_negative_phase=True)
+                log(f"      MACD Color Change (existence check): {'✅ PASSED' if color_changed else '❌ FAILED'}")
+                base3 = rsi_ok and macdline_ok and (hist_shape_ok and both_same_sign and color_changed)
+                log(f"      Base 3 Gating: {'✅ ALL PASSED' if base3 else '❌ FAILED'}")
+                if base3:
+                    trend_start = find_trend_start_low(low, b1)
+                    fib_ok = check_fib_level(trend_start, ph1['price'], ph2['price'], is_retrace_down=True)
+                    log(f"      Fibonacci (0.618/0.786): {'✅ PASSED' if fib_ok else '❌ FAILED'}")
+                    confirm_bar = b2 + RIGHT_BARS
+                    if confirm_bar < len(closed_df_indexed):
+                        pa_ok, pa_reasons = check_price_action(closed_df_indexed, confirm_bar, "SELL", atr14.iloc[confirm_bar])
+                        log(f"      Price Action (bar={confirm_bar}): {'✅ PASSED' if pa_ok else '❌ FAILED'} {pa_reasons if pa_ok else ''}")
+                    else:
+                        pa_ok = False
+                        log(f"      Price Action: ❌ FAILED (confirm_bar={confirm_bar} out of range)")
+                    score = 3 + (1 if fib_ok else 0) + (1 if pa_ok else 0)
+                    log(f"      → SCORE: {score}/5 {'✅ SIGNAL' if score >= 3 else '❌ NO SIGNAL (need ≥3)'}")
+        
+        if is_hidden:
+            log(f"      Trend Check: ⏭️ SKIPPED (Hidden)")
+            rsi_ok = ph2['rsi'] > ph1['rsi']
+            macdline_ok = ph2['macdline'] > ph1['macdline']
+            log(f"      Hidden RSI (PH2.RSI > PH1.RSI): {'✅ PASSED' if rsi_ok else '❌ FAILED'}")
+            log(f"      Hidden MACD Line (PH2.MACD > PH1.MACD): {'✅ PASSED' if macdline_ok else '❌ FAILED'}")
+            log(f"      → Hidden Signal: {'✅' if (rsi_ok or macdline_ok) else '❌'}")
+    else:
+        log(f"      ⏭️ SKIPPED (not enough pivot highs: {len(state.pivot_highs)})")
+    log("")
+    
+    # ── خلاصه نهایی ────────────────────────────────────────────────────────
+    log(f"   🏁 FINAL RESULT:")
+    if buy_signal:
+        log(f"      ✅ BUY SIGNAL GENERATED")
+        log(f"      Entry={entry_price:.4f}, SL={buy_stop:.4f}, TP={buy_target:.4f}")
+        log(f"      Score={buy_score}/5, Type={buy_label}")
+    elif sell_signal:
+        log(f"      ✅ SELL SIGNAL GENERATED")
+        log(f"      Entry={entry_price:.4f}, SL={sell_stop:.4f}, TP={sell_target:.4f}")
+        log(f"      Score={sell_score}/5, Type={sell_label}")
+    else:
+        log(f"      ❌ NO SIGNAL — conditions not met")
+        reasons = []
+        if len(new_pivots_low) == 0 and len(new_pivots_high) == 0:
+            reasons.append("No new pivots this cycle")
+        if len(state.pivot_lows) < 2 and len(state.pivot_highs) < 2:
+            reasons.append("Not enough pivots in memory")
+        if reasons:
+            log(f"      Reasons: {', '.join(reasons)}")
+    
+    log("   " + "=" * 70)
+
+    # لاگ تلگرام (بدون Debug)
     current_time = time.time()
     should_send = False
     if state.telegram_log_count < 5:
@@ -1591,9 +1797,9 @@ if __name__ == "__main__":
     hashtag_list = "\n".join([f"• {v} → {k}" for k, v in HASHTAGS.items()])
     send_telegram_message(
         f"🤖 DTM Pro — آنلاین {HASHTAGS['startup']}\n\n"
-        f"🧠 DTM Divergence (Pine Script Mirror)\n"
+        f"🧠 DTM Divergence (Pine Script Mirror — Parity Final)\n"
         f"📊 سیگنال + ترید خودکار\n\n"
-        f"⚙️ Pivot: 5/3 | R/R: 2.0 | Risk: 3.5 USDT\n"
+        f"⚙️ Pivot: 5/3 (Fast) | MTF: Off | R/R: 2.0 | Risk: 3.5 USDT\n"
         f"🔧 ETH=50x | LTC/DOGE=75x\n\n"
         f"📌 هشتگ‌های ثابت:\n{hashtag_list}\n\n"
         f"📊 شمارنده سیگنال: از #سیگنال_{SIGNAL_COUNTER + 1} شروع می‌شود\n\n"
