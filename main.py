@@ -1423,7 +1423,7 @@ def analyze_and_execute():
                     f"⚖️ Risk/Reward Ratio: {rr:.2f}\n\n"
                     f"━━━━━━━━━━━━━━━━━━━━━━\n"
                     f"🕒 {format_iran_time()}"
-               ‌‌ )
+                )
                 try:
                     send_telegram_message(signal_message)
                 except Exception as e:
