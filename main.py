@@ -73,7 +73,7 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "8514469828:AAFC76EiVA7I4TF
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "7402770612")
 
 HISTORY_FILE = "trades_history_hybrid.json"
-STATE_FILE = "pivot_state.json"  # NEW: فایل ذخیره state پیوت‌ها
+STATE_FILE = "pivot_state.json"
 
 # =====================================================================================
 # هشتگ‌ها
@@ -107,7 +107,7 @@ TREND_SLOPE_MIN_PCT = 0.05
 FIB_USE_618 = True
 FIB_USE_786 = True
 FIB_TOLERANCE_PCT = 0.5
-FIB_SEARCH_BARS = 500  # FIXED: افزایش از 100 به 500
+FIB_SEARCH_BARS = 500
 STOP_BUFFER_PCT = 0.05
 RIGHT_BARS = 3
 
@@ -117,8 +117,7 @@ MIN_CANDLE_ATR_RATIO = 0.3
 BIG_CANDLE_AVG_LEN = 14
 BIG_CANDLE_MULTIPLIER = 1.5
 
-# NEW: آیا API کندل باز (در حال تشکیل) برمی‌گردونه؟
-API_RETURNS_OPEN_CANDLE = False  # FIXED: False یعنی API فقط کندل بسته میده
+API_RETURNS_OPEN_CANDLE = False
 
 # =====================================================================================
 # Tick Size و Price Precision
@@ -442,7 +441,6 @@ def calc_ema(series, length):
     ema = pd.Series(np.nan, index=series.index)
     if len(series) < length:
         return ema
-    # اولین مقدار SMA
     sma_seed = series.iloc[:length].mean()
     ema.iloc[length - 1] = sma_seed
     multiplier = 2.0 / (length + 1)
@@ -474,8 +472,8 @@ def calc_rsi(close, length=14):
             rs.iloc[i] = avg_gain.iloc[i] / avg_loss.iloc[i]
             rsi.iloc[i] = 100.0 - (100.0 / (1.0 + rs.iloc[i]))
     
-    # Forward fill مانند Pine (نقاط NaN را با آخرین مقدار معتبر پر کن)
-    rsi = rsi.ffill().fillna(50.0)
+    # FIXED: استفاده از method='pad' برای سازگاری با همه نسخه‌های pandas
+    rsi = rsi.fillna(method='pad').fillna(50.0)
     return rsi
 
 def calc_macd(close, fast=12, slow=26, signal=9):
@@ -700,7 +698,7 @@ def round_price(price, symbol):
     return round(rounded, precision)
 
 # =====================================================================================
-# سیستم امتیازدهی (بدون تغییر)
+# سیستم امتیازدهی
 # =====================================================================================
 def calculate_divergence_score(p1, p2, direction, bar1, bar2, hist_series, high_series, low_series, df_indexed, atr_series):
     details = []
@@ -766,7 +764,7 @@ def classify_signal(score):
     else: return None, None
 
 # =====================================================================================
-# شمارنده سیگنال (بدون تغییر)
+# شمارنده سیگنال
 # =====================================================================================
 SIGNAL_COUNTER = 0
 
@@ -876,7 +874,7 @@ def update_trade_result(signal_time, result, close_price, close_time, pnl=None, 
     save_history(h)
 
 # =====================================================================================
-# توابع گزارش (با استفاده از تاریخچه صرافی)
+# توابع گزارش
 # =====================================================================================
 def fetch_exchange_trades_for_report(exchange, symbol=None, start_time=None, end_time=None):
     return exchange.fetch_trade_history(symbol=symbol, start_time=start_time, end_time=end_time)
@@ -947,10 +945,14 @@ def send_reports(exchange):
     except Exception as e:
         logger.error(f"[REPORT ERROR] Local daily: {e}")
     try:
-        today_start = now.replace(hour=0, minute=0, second=0, microsecond=0).isoformat() + 'Z'
-        today_end = now.isoformat() + 'Z'
+        # FIXED: فرمت تاریخ صحیح برای صرافی (UTC بدون آفست)
+        now_utc = datetime.now(timezone.utc)
+        today_start = now_utc.replace(hour=0, minute=0, second=0, microsecond=0).strftime('%Y-%m-%dT%H:%M:%SZ')
+        today_end = now_utc.strftime('%Y-%m-%dT%H:%M:%SZ')
+        
         exchange_trades_today = exchange.fetch_trade_history(start_time=today_start, end_time=today_end)
         current_balance = exchange.fetch_balance()
+        
         if isinstance(exchange_trades_today, list) and exchange_trades_today:
             total_realized_pnl = sum(float(t.get('realizedPnl', 0)) for t in exchange_trades_today)
             wins = len([t for t in exchange_trades_today if float(t.get('realizedPnl', 0)) > 0])
@@ -979,7 +981,6 @@ def send_reports(exchange):
         logger.info("[REPORT] Exchange-based daily report sent.")
     except Exception as e:
         logger.error(f"[REPORT ERROR] Exchange-based: {e}")
-        send_telegram_message(f"❌ خطا در تهیه گزارش واقعی صرافی: {str(e)[:200]}")
 
 # =====================================================================================
 # Startup Diagnostic
@@ -1277,8 +1278,10 @@ def track_open_signals(exchange):
                 break
         if matching_open_pos is None:
             try:
-                today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
-                trades = exchange.fetch_trade_history(symbol=symbol, start_time=today_start.isoformat() + 'Z')
+                # FIXED: فرمت تاریخ صحیح
+                now_utc = datetime.now(timezone.utc)
+                today_start = now_utc.replace(hour=0, minute=0, second=0, microsecond=0).strftime('%Y-%m-%dT%H:%M:%SZ')
+                trades = exchange.fetch_trade_history(symbol=symbol, start_time=today_start)
                 last_closed_trade = None
                 for t in reversed(trades):
                     if t.get('symbol') == symbol:
