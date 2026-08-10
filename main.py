@@ -473,7 +473,8 @@ def calc_rsi(close, length=14):
             rsi.iloc[i] = 100.0 - (100.0 / (1.0 + rs.iloc[i]))
     
     # FIXED: استفاده از method='pad' برای سازگاری با همه نسخه‌های pandas
-    rsi = rsi.fillna(method='pad').fillna(50.0)
+    
+    rsi = rsi.interpolate(method='pad').fillna(50.0)
     return rsi
 
 def calc_macd(close, fast=12, slow=26, signal=9):
