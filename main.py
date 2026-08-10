@@ -1428,6 +1428,17 @@ def analyze_and_execute():
                     send_telegram_message(signal_message)
                 except Exception as e:
                     logger.error(f"[TELEGRAM SIGNAL ERROR] {symbol}: {e}")
+                     # ارسال پیام کوتاه‌تر به عنوان پشتیبان
+                    fallback_msg = (
+                        f"{emoji} Signal {label} — {symbol} {HASHTAGS['signal']} #Signal_{signal_number}\n"
+                        f"📍 Entry: {entry:.{PRICE_PRECISION.get(symbol, 2)}f}\n"
+                        f"🛑 SL: {stop:.{PRICE_PRECISION.get(symbol, 2)}f} | 🎯 TP: {target:.{PRICE_PRECISION.get(symbol, 2)}f}\n"
+                        f"🕒 {format_iran_time()}"
+                    )
+                    try:
+                        send_telegram_message(fallback_msg)
+                    except:
+                        pass
                 time.sleep(0.5)
 
       
