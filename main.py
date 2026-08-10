@@ -14,7 +14,7 @@ DTM Divergence Auto-Trading Bot - TheTrueTrade (نسخه هیبریدی)
 - کندل تأییدیه: روی کندل تأیید (bar2 + RIGHT_BARS)
 - رفع Off-by-one در mid_peak/mid_trough
 - رفع فرمول avg_body در Price Action
-- رفع باگ منطق تغییر رنگ MACD Histogram
+- رفع باگ منطق تغییر رنگ MACD Histogram — **FIXED**: الگوی ۳ روندی (سبز-قرمز-سبز / قرمز-سبز-قرمز)
 - رفع Gating: RSI + MACD Line + MACD Histogram هر سه اجباری
 - رفع فرمول فیبوناچی
 - رفع تکرار سیگنال: فقط وقتی پیوت دوم تازه شکل گرفته باشد
@@ -582,14 +582,69 @@ def resolve_bar_from_ts(df_indexed, ts):
         return None
     return df_indexed.index.get_loc(ts)
 
+# FIXED: الگوی ۳ روندی برای تغییر رنگ MACD
 def check_macd_color_change(hist_series, bar1, bar2, need_negative_phase):
-    """بررسی تغییر رنگ MACD histogram بین دو پیوت"""
+    """
+    بررسی تغییر رنگ MACD histogram با الگوی ۳ روندی.
+    فقط روندهای بسته‌شده بررسی میشن (روند فعلی که هنوز تغییر رنگ نداده، نادیده گرفته میشه).
+    
+    برای BUY (need_negative_phase=False): باید الگوی سبز-قرمز-سبز دیده بشه
+    برای SELL (need_negative_phase=True): باید الگوی قرمز-سبز-قرمز دیده بشه
+    
+    توجه: ۱ = روند مثبت (سبز)، -۱ = روند منفی (قرمز)
+    """
     if bar1 is None or bar2 is None or bar2 <= bar1 + 1:
         return False
-    window = hist_series.iloc[bar1 + 1:bar2]
-    if window.empty:
+    
+    # فقط تا کندل بسته‌شده (آخرین کندل کامل — کندل فعلی که هنوز بازه حذف میشه)
+    last_closed = len(hist_series) - 2
+    if last_closed <= bar1 + 1:
         return False
-    return (window < 0).any() if need_negative_phase else (window > 0).any()
+    
+    # محدوده بررسی: از bar1+1 تا last_closed
+    window = hist_series.iloc[bar1 + 1:last_closed + 1]
+    if len(window) < 3:
+        return False
+    
+    # شناسایی روندها (تغییر فازهای مثبت/منفی)
+    phases = []
+    current_phase = 1 if window.iloc[0] > 0 else (-1 if window.iloc[0] < 0 else 0)
+    
+    for i in range(1, len(window)):
+        val = window.iloc[i]
+        if val == 0:
+            continue
+        new_phase = 1 if val > 0 else -1
+        if new_phase != current_phase:
+            phases.append(current_phase)
+            current_phase = new_phase
+    
+    # اضافه کردن آخرین روند بسته‌شده
+    if current_phase != 0:
+        phases.append(current_phase)
+    
+    # بررسی ۳ روند آخر
+    if len(phases) < 3:
+        return False
+    
+    last_three = phases[-3:]
+    
+    if need_negative_phase:
+        # SELL: نیاز به الگوی قرمز(+۱)-سبز(-۱)-قرمز(+۱)
+        if last_three == [1, -1, 1]:
+            return True
+        # یا الگوی سبز(-۱)-قرمز(+۱)-سبز(-۱)
+        if last_three == [-1, 1, -1]:
+            return True
+    else:
+        # BUY: نیاز به الگوی سبز(-۱)-قرمز(+۱)-سبز(-۱)
+        if last_three == [-1, 1, -1]:
+            return True
+        # یا الگوی قرمز(+۱)-سبز(-۱)-قرمز(+۱)
+        if last_three == [1, -1, 1]:
+            return True
+    
+    return False
 
 def find_trend_start_low(low_series, ref_bar, search_bars=FIB_SEARCH_BARS):
     """پیدا کردن پایین‌ترین کف در پنجره جستجو (معادل ta.lowest در Pine)"""
@@ -1428,7 +1483,6 @@ def analyze_and_execute():
                     send_telegram_message(signal_message)
                 except Exception as e:
                     logger.error(f"[TELEGRAM SIGNAL ERROR] {symbol}: {e}")
-                     # ارسال پیام کوتاه‌تر به عنوان پشتیبان
                     fallback_msg = (
                         f"{emoji} Signal {label} — {symbol} {HASHTAGS['signal']} #Signal_{signal_number}\n"
                         f"📍 Entry: {entry:.{PRICE_PRECISION.get(symbol, 2)}f}\n"
@@ -1440,8 +1494,6 @@ def analyze_and_execute():
                     except:
                         pass
                 time.sleep(0.5)
-
-      
 
                 if exchange.connected:
                     try:
