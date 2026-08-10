@@ -473,14 +473,10 @@ def calc_rsi(close, length=14):
             rsi.iloc[i] = 100.0 - (100.0 / (1.0 + rs.iloc[i]))
     
     # FIXED: استفاده از method='pad' برای سازگاری با همه نسخه‌های pandas
-    # Forward fill دستی (سازگار با همه نسخه‌های pandas)
-last_valid = 50.0
-for i in range(len(rsi)):
-    if pd.isna(rsi.iloc[i]):
-        rsi.iloc[i] = last_valid
-    else:
-        last_valid = rsi.iloc[i]
-return rsi
+    # Forward fill مانند Pine (نقاط NaN را با آخرین مقدار معتبر پر کن)
+    rsi = rsi.ffill().fillna(50.0)
+    return rsi
+
 
 
 def calc_macd(close, fast=12, slow=26, signal=9):
