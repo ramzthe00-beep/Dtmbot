@@ -1423,9 +1423,14 @@ def analyze_and_execute():
                     f"⚖️ Risk/Reward Ratio: {rr:.2f}\n\n"
                     f"━━━━━━━━━━━━━━━━━━━━━━\n"
                     f"🕒 {format_iran_time()}"
-                )
-                send_telegram_message(signal_message)
+               ‌‌ )
+                try:
+                    send_telegram_message(signal_message)
+                except Exception as e:
+                    logger.error(f"[TELEGRAM SIGNAL ERROR] {symbol}: {e}")
                 time.sleep(0.5)
+
+      
 
                 if exchange.connected:
                     try:
