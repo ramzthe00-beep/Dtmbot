@@ -4,10 +4,10 @@ DTM Divergence Auto-Trading Bot - TheTrueTrade (نسخه هیبریدی)
 ====================================================================
 نسخه نهایی کامل — منطق واگرایی دقیقاً مطابق Pine Script:
 - Pivot: حالت سریع (5/3)
-- RSI با calc_rma (Wilder Smoothing مثل ta.rma در Pine) — **FIXED**: fillna حذف شد، منطق 0/100 مثل Pine
-- ATR با calc_rma (Wilder Smoothing مثل ta.atr در Pine) — **FIXED**: ewm با calc_rma جایگزین شد
-- EMA با seed SMA (مثل Pine) — **FIXED**: ewm با seed SMA جایگزین شد
-- عمق داده 1500 کندل
+- RSI با calc_rma (Wilder Smoothing مثل ta.rma در Pine) — **FIXED**: منطق 0/100 مثل Pine، بدون fillna
+- ATR با calc_rma (Wilder Smoothing مثل ta.atr در Pine)
+- EMA دقیقاً مثل Pine (بدون SMA seed) — **FIXED**: از کندل اول با مقدار خودش شروع میشه
+- عمق داده 5000 کندل (معادل حساب رایگان TradingView) — **FIXED**: با برش tail()
 - رفع درز State پیوت‌ها (start_bar=0 همیشه)
 - RSI/MACD در همان کندل Pivot
 - شرط روند: تفاضل مقدار برازش دو رگرسیون (مثل ta.linreg)
@@ -19,9 +19,9 @@ DTM Divergence Auto-Trading Bot - TheTrueTrade (نسخه هیبریدی)
 - رفع فرمول فیبوناچی
 - رفع تکرار سیگنال: فقط وقتی پیوت دوم تازه شکل گرفته باشد
 - رفع فیلتر روند برای Hidden Divergence
-- **NEW**: State persistence — پیوت‌ها در فایل ذخیره میشن
-- **NEW**: FIB_SEARCH_BARS = 500
-- **NEW**: اعتبارسنجی df.iloc[:-1]
+- State persistence — پیوت‌ها در فایل ذخیره میشن
+- FIB_SEARCH_BARS = 500
+- اعتبارسنجی df.iloc[:-1]
 - fetch_balance از /futures/assets
 - استفاده از cost (مارجین) برای MARKET order
 - نمایش موجودی در پیام اتصال صرافی
@@ -33,6 +33,7 @@ DTM Divergence Auto-Trading Bot - TheTrueTrade (نسخه هیبریدی)
 - دریافت تاریخچه معاملات از صرافی برای گزارش‌ها
 - پیام سیگنال انگلیسی (بدون بخش دلایل)
 - گزارش واقعی صرافی (معاملات + موجودی)
+- **SECURITY**: کلیدهای API فقط از متغیر محیطی خوانده میشن
 """
 
 import os
@@ -60,17 +61,23 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # =====================================================================================
-# کلیدهای API
+# کلیدهای API — فقط از متغیر محیطی
 # =====================================================================================
-API_KEY = os.getenv("API_KEY", "pXJ3uOI3y7iPHxIgefQJ30PikXHqbQyVV9Ouj-_K")
-API_SECRET = os.getenv("API_SECRET", "4cd23e00385ea761250034b420c86f40c4edb8e27c285c21572dbadf7e927b09")
-BASE_URL = "https://apiv2.thetruetrade.io"
+API_KEY = os.getenv("API_KEY")
+API_SECRET = os.getenv("API_SECRET")
+BASE_URL = os.getenv("BASE_URL", "https://apiv2.thetruetrade.io")
 
-# =====================================================================================
-# تنظیمات تلگرام
-# =====================================================================================
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "8514469828:AAFC76EiVA7I4TFiX08jJ5N6-eKtOLMKitE")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "7402770612")
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+
+if not API_KEY or not API_SECRET:
+    raise RuntimeError(
+        "API_KEY / API_SECRET باید به‌عنوان متغیر محیطی ست شوند."
+    )
+if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+    raise RuntimeError(
+        "TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID باید به‌عنوان متغیر محیطی ست شوند."
+    )
 
 HISTORY_FILE = "trades_history_hybrid.json"
 STATE_FILE = "pivot_state.json"
@@ -119,6 +126,9 @@ BIG_CANDLE_MULTIPLIER = 1.5
 
 API_RETURNS_OPEN_CANDLE = False
 
+# FIXED: افزایش به 5000 (معادل حساب رایگان TradingView)
+HISTORY_BARS = 5000
+
 # =====================================================================================
 # Tick Size و Price Precision
 # =====================================================================================
@@ -141,7 +151,7 @@ class TrueTradePublicData:
     def __init__(self):
         self.base_url = BASE_URL
 
-    def fetch_ohlcv(self, symbol, timeframe='1m', limit=1500):
+    def fetch_ohlcv(self, symbol, timeframe='1m', limit=HISTORY_BARS):
         symbol_clean = symbol.upper()
         resolution_map = {
             "1m": "1", "5m": "5", "15m": "15", "30m": "30",
@@ -435,22 +445,35 @@ def calc_rma(series, length):
         rma.iloc[i] = prev
     return rma
 
-# PINE-EXACT: EMA با seed SMA (مانند Pine)
+# PINE-EXACT: EMA مثل Pine (بدون SMA seed — از کندل اول با مقدار خودش شروع میشه)
 def calc_ema(series, length):
-    """EMA با seed SMA دقیقاً مانند Pine Script (ta.ema)"""
+    """
+    EMA دقیقاً مانند Pine Script (ta.ema).
+    Pine هیچ دوره warm-up با SMA ندارد؛ از اولین کندل با مقدار خودش شروع میکند.
+    """
+    alpha = 2.0 / (length + 1)
     ema = pd.Series(np.nan, index=series.index)
-    if len(series) < length:
+    if len(series) == 0:
         return ema
-    sma_seed = series.iloc[:length].mean()
-    ema.iloc[length - 1] = sma_seed
-    multiplier = 2.0 / (length + 1)
-    for i in range(length, len(series)):
-        ema.iloc[i] = (series.iloc[i] - ema.iloc[i - 1]) * multiplier + ema.iloc[i - 1]
+    first_valid = series.first_valid_index()
+    if first_valid is None:
+        return ema
+    start_pos = series.index.get_loc(first_valid)
+    ema.iloc[start_pos] = series.iloc[start_pos]
+    prev = ema.iloc[start_pos]
+    for i in range(start_pos + 1, len(series)):
+        prev = alpha * series.iloc[i] + (1 - alpha) * prev
+        ema.iloc[i] = prev
     return ema
 
-# PINE-EXACT: RSI دقیقاً مثل Pine (با RMA و منطق 0/100)
+# PINE-EXACT: RSI دقیقاً مثل Pine (با RMA و منطق 0/100، بدون fillna)
 def calc_rsi(close, length=14):
-    """RSI دقیقاً مثل Pine: وقتی avg_loss=0 باشد RSI=100، وقتی avg_gain=0 باشد RSI=0"""
+    """
+    RSI دقیقاً مثل Pine:
+    - وقتی avg_loss=0 باشد RSI=100 (حتی اگر avg_gain هم 0 باشد)
+    - وقتی avg_gain=0 باشد RSI=0
+    - NaNها پر نمیشوند — مثل Pine که na را na نگه میدارد
+    """
     delta = close.diff()
     gain = delta.clip(lower=0)
     loss = -delta.clip(upper=0)
@@ -458,26 +481,21 @@ def calc_rsi(close, length=14):
     avg_gain = calc_rma(gain, length)
     avg_loss = calc_rma(loss, length)
     
-    rs = pd.Series(np.nan, index=close.index)
     rsi = pd.Series(np.nan, index=close.index)
     
     for i in range(len(close)):
-        if pd.isna(avg_gain.iloc[i]) or pd.isna(avg_loss.iloc[i]):
+        ag = avg_gain.iloc[i]
+        al = avg_loss.iloc[i]
+        if pd.isna(ag) or pd.isna(al):
             continue
-        if avg_loss.iloc[i] == 0:
-            rsi.iloc[i] = 100.0 if avg_gain.iloc[i] > 0 else 50.0
-        elif avg_gain.iloc[i] == 0:
+        if al == 0:
+            rsi.iloc[i] = 100.0
+        elif ag == 0:
             rsi.iloc[i] = 0.0
         else:
-            rs.iloc[i] = avg_gain.iloc[i] / avg_loss.iloc[i]
-            rsi.iloc[i] = 100.0 - (100.0 / (1.0 + rs.iloc[i]))
+            rsi.iloc[i] = 100.0 - (100.0 / (1.0 + ag / al))
     
-    # FIXED: استفاده از method='pad' برای سازگاری با همه نسخه‌های pandas
-    # Forward fill مانند Pine (نقاط NaN را با آخرین مقدار معتبر پر کن)
-    rsi = rsi.ffill().fillna(50.0)
     return rsi
-
-
 
 def calc_macd(close, fast=12, slow=26, signal=9):
     ema_fast = calc_ema(close, fast)
@@ -948,7 +966,6 @@ def send_reports(exchange):
     except Exception as e:
         logger.error(f"[REPORT ERROR] Local daily: {e}")
     try:
-        # FIXED: فرمت تاریخ صحیح برای صرافی (UTC بدون آفست)
         now_utc = datetime.now(timezone.utc)
         today_start = now_utc.replace(hour=0, minute=0, second=0, microsecond=0).strftime('%Y-%m-%dT%H:%M:%SZ')
         today_end = now_utc.strftime('%Y-%m-%dT%H:%M:%SZ')
@@ -1001,7 +1018,7 @@ def run_startup_diagnostic():
     public_data = TrueTradePublicData()
     df = None
     try:
-        df = public_data.fetch_ohlcv("LTCUSDT", "1m", 1500)
+        df = public_data.fetch_ohlcv("LTCUSDT", "1m", HISTORY_BARS)
         if df is not None and not df.empty:
             diagnostic_log.append(f"🟢 دریافت داده: {len(df)} کندل")
         else:
@@ -1065,6 +1082,11 @@ def detect_signal(df, state, symbol, debug=False):
     else:
         closed_df_indexed = df.copy()
         log(f"   API returns only closed candles — using all {len(closed_df_indexed)} candles")
+    
+    # FIXED: برش به 5000 کندل آخر (معادل TradingView رایگان)
+    if len(closed_df_indexed) > HISTORY_BARS:
+        closed_df_indexed = closed_df_indexed.tail(HISTORY_BARS).copy()
+        log(f"   ✂️ Sliced to last {HISTORY_BARS} bars (TV free-tier parity)")
     
     closed_df = closed_df_indexed.reset_index(drop=True)
 
@@ -1281,7 +1303,6 @@ def track_open_signals(exchange):
                 break
         if matching_open_pos is None:
             try:
-                # FIXED: فرمت تاریخ صحیح
                 now_utc = datetime.now(timezone.utc)
                 today_start = now_utc.replace(hour=0, minute=0, second=0, microsecond=0).strftime('%Y-%m-%dT%H:%M:%SZ')
                 trades = exchange.fetch_trade_history(symbol=symbol, start_time=today_start)
@@ -1337,7 +1358,7 @@ def analyze_and_execute():
 
     for symbol in SYMBOLS:
         try:
-            df = data.fetch_ohlcv(symbol, '1m', 1500)
+            df = data.fetch_ohlcv(symbol, '1m', HISTORY_BARS)
             if df is None or df.empty:
                 logger.warning(f"[SKIP] {symbol}")
                 continue
