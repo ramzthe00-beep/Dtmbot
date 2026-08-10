@@ -37,7 +37,7 @@ DTM Divergence Auto-Trading Bot - TheTrueTrade (نسخه هیبریدی)
 - پیام سیگنال انگلیسی (بدون بخش دلایل)
 - گزارش واقعی صرافی (معاملات + موجودی)
 - **SECURITY**: کلیدهای API فقط از متغیر محیطی خوانده میشن
-- **DEBUG**: Full Debug Log (کنسول فقط، نه تلگرام)
+- **DEBUG**: Full Debug Log (کنسول + فایل `full_debug_log.txt`)
 """
 
 import os
@@ -118,7 +118,7 @@ TREND_SLOPE_MIN_PCT = 0.05
 FIB_USE_618 = True
 FIB_USE_786 = True
 FIB_TOLERANCE_PCT = 0.5
-FIB_SEARCH_BARS = 100  # [BUG B - FIXED] مطابق Pine (نه 500)
+FIB_SEARCH_BARS = 100
 STOP_BUFFER_PCT = 0.05
 
 LEFT_BARS = 5
@@ -436,12 +436,10 @@ def format_iran_date(dt=None):
 # =====================================================================================
 # توابع محاسباتی پایه (Pine-Exact)
 # =====================================================================================
-# [RIGOR FIX] calc_rma با تطبیق دقیق معناشناسی na در Pine
 def calc_rma(series, length):
     """
     معادل دقیق ta.rma (Wilder Smoothing) در Pine Script.
     Pine: na «آلوده‌کننده» است نه skip-شونده.
-    RMA فقط وقتی seed میشه که یک پنجره کامل بدون na پیدا بشه.
     """
     n = len(series)
     rma = pd.Series(np.nan, index=series.index)
@@ -465,11 +463,9 @@ def calc_rma(series, length):
         rma.iloc[i] = prev
     return rma
 
-# PINE-EXACT: EMA مثل Pine (بدون SMA seed — از کندل اول با مقدار خودش شروع میشه)
 def calc_ema(series, length):
     """
     EMA دقیقاً مانند Pine Script (ta.ema).
-    Pine هیچ دوره warm-up با SMA ندارد؛ از اولین کندل با مقدار خودش شروع میکند.
     """
     alpha = 2.0 / (length + 1)
     ema = pd.Series(np.nan, index=series.index)
@@ -486,13 +482,9 @@ def calc_ema(series, length):
         ema.iloc[i] = prev
     return ema
 
-# PINE-EXACT: RSI دقیقاً مثل Pine (با RMA و منطق 0/100، بدون fillna)
 def calc_rsi(close, length=14):
     """
-    RSI دقیقاً مثل Pine:
-    - وقتی avg_loss=0 باشد RSI=100 (حتی اگر avg_gain هم 0 باشد)
-    - وقتی avg_gain=0 باشد RSI=0
-    - NaNها پر نمیشوند — مثل Pine که na را na نگه میدارد
+    RSI دقیقاً مثل Pine.
     """
     delta = close.diff()
     gain = delta.clip(lower=0)
@@ -524,7 +516,6 @@ def calc_macd(close, fast=12, slow=26, signal=9):
     signal_line = calc_ema(macd_line, signal)
     return macd_line, signal_line, macd_line - signal_line
 
-# PINE-EXACT: ATR با calc_rma (Wilder Smoothing)
 def calc_atr(high, low, close, length=14):
     """ATR با Wilder Smoothing (calc_rma) دقیقاً مثل ta.atr در Pine"""
     prev_close = close.shift(1)
@@ -532,7 +523,7 @@ def calc_atr(high, low, close, length=14):
     return calc_rma(tr, length)
 
 def find_pivot_high(high, left=5, right=3):
-    """تشخیص قله‌ها — منطق Pine: قیمت باید strictly greater از همه باشه"""
+    """تشخیص قله‌ها"""
     n = len(high)
     result = pd.Series(np.nan, index=high.index)
     for i in range(left, n - right):
@@ -541,7 +532,7 @@ def find_pivot_high(high, left=5, right=3):
     return result
 
 def find_pivot_low(low, left=5, right=3):
-    """تشخیص دره‌ها — منطق Pine: قیمت باید strictly lower از همه باشه"""
+    """تشخیص دره‌ها"""
     n = len(low)
     result = pd.Series(np.nan, index=low.index)
     for i in range(left, n - right):
@@ -550,13 +541,13 @@ def find_pivot_low(low, left=5, right=3):
     return result
 
 def _linreg_end(y):
-    """محاسبه مقدار پایانی رگرسیون خطی (معادل ta.linreg در Pine)"""
+    """محاسبه مقدار پایانی رگرسیون خطی"""
     x = np.arange(len(y))
     slope, intercept = np.polyfit(x, y, 1)
     return intercept + slope * (len(y) - 1)
 
 def is_trending_up(close, ref_bar, lookback=TREND_LOOKBACK, slope_min_pct=TREND_SLOPE_MIN_PCT):
-    """تشخیص روند صعودی — پنجره‌ها دقیقاً مثل Pine"""
+    """تشخیص روند صعودی"""
     if ref_bar is None or ref_bar - 2 * lookback + 1 < 0:
         return False
     
@@ -577,7 +568,7 @@ def is_trending_up(close, ref_bar, lookback=TREND_LOOKBACK, slope_min_pct=TREND_
     return (total_slope / avg) * 100 > slope_min_pct
 
 def is_trending_down(close, ref_bar, lookback=TREND_LOOKBACK, slope_min_pct=TREND_SLOPE_MIN_PCT):
-    """تشخیص روند نزولی — پنجره‌ها دقیقاً مثل Pine"""
+    """تشخیص روند نزولی"""
     if ref_bar is None or ref_bar - 2 * lookback + 1 < 0:
         return False
     
@@ -602,11 +593,9 @@ def resolve_bar_from_ts(df_indexed, ts):
         return None
     return df_indexed.index.get_loc(ts)
 
-# [BUG A - FIXED] تابع تغییر رنگ MACD Histogram — معادل دقیق Pine
 def check_macd_color_change(hist_series, bar1, bar2, need_negative_phase):
     """
     معادل دقیق تابع Pine: یه existence check ساده.
-    می‌پرسه: «آیا بین دو پیوت حداقل یک کندل با علامت مخالف وجود دارد؟»
     """
     if bar1 is None or bar2 is None or bar2 <= bar1:
         return False
@@ -624,7 +613,7 @@ def check_macd_color_change(hist_series, bar1, bar2, need_negative_phase):
     return bool((window > 0).any())
 
 def find_trend_start_low(low_series, ref_bar, search_bars=FIB_SEARCH_BARS):
-    """پیدا کردن پایین‌ترین کف در پنجره جستجو (معادل ta.lowest در Pine)"""
+    """پیدا کردن پایین‌ترین کف"""
     if ref_bar is None:
         return None
     start = max(0, ref_bar - search_bars + 1)
@@ -632,7 +621,7 @@ def find_trend_start_low(low_series, ref_bar, search_bars=FIB_SEARCH_BARS):
     return window.min() if len(window) > 0 else None
 
 def find_trend_start_high(high_series, ref_bar, search_bars=FIB_SEARCH_BARS):
-    """پیدا کردن بالاترین سقف در پنجره جستجو (معادل ta.highest در Pine)"""
+    """پیدا کردن بالاترین سقف"""
     if ref_bar is None:
         return None
     start = max(0, ref_bar - search_bars + 1)
@@ -1097,12 +1086,33 @@ def run_startup_diagnostic():
     logger.info("Startup Diagnostic Complete")
 
 # =====================================================================================
-# تابع تشخیص سیگنال (با Full Debug Log — فقط کنسول)
+# تابع ذخیره لاگ در فایل
+# =====================================================================================
+def save_debug_log_to_file(symbol, debug_log_lines):
+    """ذخیره Debug Log در یک فایل ثابت"""
+    try:
+        today = format_iran_date()
+        log_file = "full_debug_log.txt"
+        
+        with open(log_file, "a", encoding="utf-8") as f:
+            f.write(f"\n{'═' * 80}\n")
+            f.write(f"📅 DATE: {today} | SYMBOL: {symbol}\n")
+            f.write(f"{'═' * 80}\n\n")
+            for line in debug_log_lines:
+                f.write(line + "\n")
+            f.write("-" * 70 + "\n\n")
+    except Exception as e:
+        logger.error(f"[DEBUG FILE] Error writing log: {e}")
+
+# =====================================================================================
+# تابع تشخیص سیگنال (با Full Debug Log — فقط فایل، نه کنسول)
 # =====================================================================================
 def detect_signal(df, state, symbol, debug=False):
     debug_log = []
+    debug_file_lines = []  # فقط برای فایل
     def log(msg):
         debug_log.append(msg)
+        debug_file_lines.append(msg)
         if debug:
             logger.info(msg)
 
@@ -1115,7 +1125,6 @@ def detect_signal(df, state, symbol, debug=False):
         closed_df_indexed = df.copy()
         log(f"   API returns only closed candles — using all {len(closed_df_indexed)} candles")
     
-    # [ENHANCEMENT D] Bar-State Safety Net
     if len(closed_df_indexed) > 0:
         last_bar_start = closed_df_indexed.index[-1]
         if last_bar_start.tzinfo is None:
@@ -1126,7 +1135,6 @@ def detect_signal(df, state, symbol, debug=False):
             log(f"   ⏳ آخرین کندل ({last_bar_start}) هنوز کامل نشده — حذف شد")
             closed_df_indexed = closed_df_indexed.iloc[:-1].copy()
     
-    # FIXED: برش به 5000 کندل آخر (معادل TradingView رایگان)
     if len(closed_df_indexed) > HISTORY_BARS:
         closed_df_indexed = closed_df_indexed.tail(HISTORY_BARS).copy()
         log(f"   ✂️ Sliced to last {HISTORY_BARS} bars (TV free-tier parity)")
@@ -1234,7 +1242,6 @@ def detect_signal(df, state, symbol, debug=False):
                         log(f"      {d}")
 
                     if buy_emoji and score >= 3:
-                        # [ENHANCEMENT C] ATR در بار تأیید
                         confirm_bar_buy = min(bar2 + RIGHT_BARS, len(atr14) - 1)
                         atr_at_confirm = atr14.iloc[confirm_bar_buy]
                         stop, tp_raw, _ = compute_stop_and_targets(
@@ -1296,14 +1303,12 @@ def detect_signal(df, state, symbol, debug=False):
         log(f"   ⚪ No signal")
 
     # =========================================================================
-    # DEBUG LOG — کامل (همه چیز: روند بررسی، تأیید/رد، مشخصات کندل)
-    # فقط توی کنسول Railway، به تلگرام فرستاده نمیشه
+    # DEBUG LOG — کامل (فقط فایل، نه کنسول Railway)
     # =========================================================================
     log("   " + "=" * 70)
     log("   🔬 FULL DEBUG LOG")
     log("   " + "=" * 70)
     
-    # ── اطلاعات کلی ────────────────────────────────────────────────────────
     log(f"   📊 GENERAL:")
     log(f"      Symbol: {symbol}")
     log(f"      Time: {format_iran_time()}")
@@ -1316,7 +1321,6 @@ def detect_signal(df, state, symbol, debug=False):
     log(f"      Total Pivot Lows in Memory: {len(state.pivot_lows)}")
     log("")
     
-    # ── کندل فعلی و ۵ کندل قبلی (OHLCV + shadows) ─────────────────────────
     log(f"   🕯️ LAST 5 CANDLES (newest first):")
     for i in range(min(5, n)):
         idx = n - 1 - i
@@ -1333,7 +1337,6 @@ def detect_signal(df, state, symbol, debug=False):
             log(f"         Volume={c['volume']:.2f}")
     log("")
     
-    # ── اندیکاتورهای فعلی ──────────────────────────────────────────────────
     log(f"   📈 CURRENT INDICATORS:")
     log(f"      Entry Price (close[-1]): {entry_price:.4f}")
     log(f"      RSI(14)[-1]: {rsi_val.iloc[-1]:.2f}")
@@ -1347,7 +1350,6 @@ def detect_signal(df, state, symbol, debug=False):
     log(f"      ATR(14)[-1]: {atr14.iloc[-1]:.4f}")
     log("")
     
-    # ── ۳ پیوت High آخر ────────────────────────────────────────────────────
     log(f"   🔺 LAST 3 PIVOT HIGHS (newest first):")
     for i, p in enumerate(reversed(state.pivot_highs[-3:])):
         bar = resolve_bar_from_ts(closed_df_indexed, p['ts'])
@@ -1355,7 +1357,6 @@ def detect_signal(df, state, symbol, debug=False):
         log(f"         Price={p['price']:.4f}, RSI={p['rsi']:.2f}, MACDLine={p['macdline']:.6f}, Hist={p['hist']:.6f}")
     log("")
     
-    # ── ۳ پیوت Low آخر ─────────────────────────────────────────────────────
     log(f"   🔻 LAST 3 PIVOT LOWS (newest first):")
     for i, p in enumerate(reversed(state.pivot_lows[-3:])):
         bar = resolve_bar_from_ts(closed_df_indexed, p['ts'])
@@ -1363,7 +1364,6 @@ def detect_signal(df, state, symbol, debug=False):
         log(f"         Price={p['price']:.4f}, RSI={p['rsi']:.2f}, MACDLine={p['macdline']:.6f}, Hist={p['hist']:.6f}")
     log("")
     
-    # ── پیوت‌های جدید این چرخه ─────────────────────────────────────────────
     if new_pivots_high or new_pivots_low:
         log(f"   🆕 NEW PIVOTS THIS CYCLE:")
         for p in new_pivots_high:
@@ -1372,7 +1372,6 @@ def detect_signal(df, state, symbol, debug=False):
             log(f"      NEW PL: ts={p['ts']}, price={p['price']:.4f}")
         log("")
     
-    # ── بررسی واگرایی BUY ──────────────────────────────────────────────────
     log(f"   🔵 BUY DIVERGENCE CHECK:")
     if len(state.pivot_lows) >= 2:
         pl1 = state.pivot_lows[-2]
@@ -1429,7 +1428,6 @@ def detect_signal(df, state, symbol, debug=False):
         log(f"      ⏭️ SKIPPED (not enough pivot lows: {len(state.pivot_lows)})")
     log("")
     
-    # ── بررسی واگرایی SELL ─────────────────────────────────────────────────
     log(f"   🔴 SELL DIVERGENCE CHECK:")
     if len(state.pivot_highs) >= 2:
         ph1 = state.pivot_highs[-2]
@@ -1486,7 +1484,6 @@ def detect_signal(df, state, symbol, debug=False):
         log(f"      ⏭️ SKIPPED (not enough pivot highs: {len(state.pivot_highs)})")
     log("")
     
-    # ── خلاصه نهایی ────────────────────────────────────────────────────────
     log(f"   🏁 FINAL RESULT:")
     if buy_signal:
         log(f"      ✅ BUY SIGNAL GENERATED")
@@ -1508,7 +1505,10 @@ def detect_signal(df, state, symbol, debug=False):
     
     log("   " + "=" * 70)
 
-    # لاگ تلگرام (بدون Debug)
+    # ذخیره در فایل (همه Debug Log کامل)
+    save_debug_log_to_file(symbol, debug_file_lines)
+
+    # لاگ تلگرام (خلاصه، بدون Debug کامل)
     current_time = time.time()
     should_send = False
     if state.telegram_log_count < 5:
@@ -1541,7 +1541,7 @@ def detect_signal(df, state, symbol, debug=False):
     return None, None, None, None, early_signal, None, None, None, []
 
 # =====================================================================================
-# پیگیری سیگنال‌های باز با استفاده از API صرافی
+# پیگیری سیگنال‌های باز
 # =====================================================================================
 def track_open_signals(exchange):
     history = load_history()
