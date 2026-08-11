@@ -14,8 +14,8 @@ DTM Divergence Auto-Trading Bot - TheTrueTrade (نسخه هیبریدی)
 - کندل تأییدیه: روی کندل تأیید (bar2 + RIGHT_BARS)
 - رفع Off-by-one در mid_peak/mid_trough
 - رفع فرمول avg_body در Price Action
-- **FIXED**: شرط روند با >= (مطابق Pine)
-- **FIXED**: MACD Histogram بدون color change (مطابق Pine)
+- **FIXED**: شرط روند با > (مطابق Pine)
+- **FIXED**: MACD Color Change برگردانده شد (مطابق Pine)
 - **FIXED**: تشخیص نوع واگرایی (Classic/Hidden)
 - **FIXED**: ATR در کندل تأیید
 - **FIXED**: حد فاصله پیوت‌ها = LEFT_BARS + 1
@@ -561,10 +561,10 @@ def _linreg_end(y):
     return intercept + slope * (len(y) - 1)
 
 # =====================================================================================
-# اصلاح ۱: شرط روند با >= (مطابق Pine)
+# اصلاح ۱: شرط روند با > (مطابق Pine - برگردانده شده)
 # =====================================================================================
 def is_trending_up(close, ref_bar, lookback=TREND_LOOKBACK, slope_min_pct=TREND_SLOPE_MIN_PCT):
-    """تشخیص روند صعودی - مطابق Pine با >="""
+    """تشخیص روند صعودی - مطابق Pine با >"""
     if ref_bar is None or ref_bar - 2 * lookback + 1 < 0:
         return False
     
@@ -582,11 +582,11 @@ def is_trending_up(close, ref_bar, lookback=TREND_LOOKBACK, slope_min_pct=TREND_
     if avg == 0:
         return False
     
-    # تغییر به >= (مطابق با رفتار Pine)
-    return (total_slope / avg) * 100 >= slope_min_pct
+    # برگشت به > (مطابق با Pine)
+    return (total_slope / avg) * 100 > slope_min_pct
 
 def is_trending_down(close, ref_bar, lookback=TREND_LOOKBACK, slope_min_pct=TREND_SLOPE_MIN_PCT):
-    """تشخیص روند نزولی - مطابق Pine با <=""变成="">
+    """تشخیص روند نزولی - مطابق Pine با <"""
     if ref_bar is None or ref_bar - 2 * lookback + 1 < 0:
         return False
     
@@ -604,8 +604,8 @@ def is_trending_down(close, ref_bar, lookback=TREND_LOOKBACK, slope_min_pct=TREN
     if avg == 0:
         return False
     
-    # تغییر به <= (مطابق با رفتار Pine)
-    return (total_slope / avg) * 100 <= -slope_min_pct
+    # برگشت به < (مطابق با Pine)
+    return (total_slope / avg) * 100 < -slope_min_pct
 
 def resolve_bar_from_ts(df_indexed, ts):
     if ts not in df_indexed.index:
@@ -613,9 +613,25 @@ def resolve_bar_from_ts(df_indexed, ts):
     return df_indexed.index.get_loc(ts)
 
 # =====================================================================================
-# اصلاح ۲: حذف check_macd_color_change (مطابق Pine)
+# اصلاح ۲: تابع MACD Color Change (برگردانده شده - مطابق Pine)
 # =====================================================================================
-# تابع check_macd_color_change حذف شد چون Pine از آن استفاده نمی‌کند
+def check_macd_color_change(hist_series, bar1, bar2, need_negative_phase):
+    """
+    بررسی تغییر رنگ MACD هیستوگرام بین دو پیوت (مطابق Pine)
+    """
+    if bar1 is None or bar2 is None or bar2 <= bar1:
+        return False
+    
+    # بررسی کندل‌های بین دو پیوت
+    for i in range(bar1 + 1, bar2):
+        if i < len(hist_series):
+            h = hist_series.iloc[i]
+            if need_negative_phase and h < 0:
+                return True
+            if not need_negative_phase and h > 0:
+                return True
+    
+    return False
 
 def find_trend_start_low(low_series, ref_bar, search_bars=FIB_SEARCH_BARS):
     """پیدا کردن پایین‌ترین کف"""
@@ -700,9 +716,6 @@ def check_price_action(df, confirm_bar, direction, atr_val):
             pa = True; pa_reasons.append("Big Red Candle")
     return pa, pa_reasons
 
-# =====================================================================================
-# اصلاح ۳: محاسبه mid_peak/trough (بدون احتساب خود پیوت‌ها)
-# =====================================================================================
 def compute_stop_and_targets(pivot_highs, pivot_lows, direction, df_indexed, atr_val, stop_buffer_pct=STOP_BUFFER_PCT):
     if direction == "long":
         if len(pivot_lows) < 2:
@@ -713,7 +726,6 @@ def compute_stop_and_targets(pivot_highs, pivot_lows, direction, df_indexed, atr
         if bar1 is None or bar2 is None or bar2 <= bar1:
             return None, None, None
         stop_price = min(pl_1['price'], pl_2['price']) - stop_buffer_pct * atr_val
-        # اصلاح: بین دو پیوت را بررسی کن (بدون احتساب خود پیوت‌ها)
         mid_peak = df_indexed["high"].iloc[bar1+1:bar2].max()
         if pd.isna(mid_peak):
             return None, None, None
@@ -727,7 +739,6 @@ def compute_stop_and_targets(pivot_highs, pivot_lows, direction, df_indexed, atr
         if bar1 is None or bar2 is None or bar2 <= bar1:
             return None, None, None
         stop_price = max(ph_1['price'], ph_2['price']) + stop_buffer_pct * atr_val
-        # اصلاح: بین دو پیوت را بررسی کن (بدون احتساب خود پیوت‌ها)
         mid_trough = df_indexed["low"].iloc[bar1+1:bar2].min()
         if pd.isna(mid_trough):
             return None, None, None
@@ -750,13 +761,14 @@ def round_price(price, symbol):
     return round(rounded, precision)
 
 # =====================================================================================
-# اصلاح ۴: سیستم امتیازدهی مطابق Pine (بدون color change)
+# اصلاح ۳: سیستم امتیازدهی مطابق Pine (با MACD Color Change)
 # =====================================================================================
 def calculate_divergence_score(p1, p2, div_type, direction, bar1, bar2, hist_series, high_series, low_series, df_indexed, atr_series, close):
-    
+    """
     div_type: 'classic' or 'hidden'
     direction: 'BUY' or 'SELL'
-    
+    مطابق با Pine Script - ۶ شرط مجزا
+    """
     details = []
     score = 0
     
@@ -805,26 +817,34 @@ def calculate_divergence_score(p1, p2, div_type, direction, bar1, bar2, hist_ser
         details.append("❌ MACD Line")
     
     # ------------------------------------------------------------------
-    # شرط ۳: MACD Histogram (مطابق Pine - بدون color change)
+    # شرط ۳: MACD Histogram (مطابق Pine با Color Change)
     # ------------------------------------------------------------------
-    if direction == "BUY":
-        if div_type == 'classic':
-            # CD+: قیمت پایین‌تر، هیستوگرام بالاتر، هر دو مثبت
-            hist_ok = (p2['price'] < p1['price'] and p2['hist'] > p1['hist'] and 
-                      p1['hist'] > 0 and p2['hist'] > 0)
-        else:  # hidden
-            # HD+: قیمت بالاتر، هیستوگرام پایین‌تر، هر دو منفی
-            hist_ok = (p2['price'] > p1['price'] and p2['hist'] < p1['hist'] and 
-                      p1['hist'] < 0 and p2['hist'] < 0)
-    else:  # SELL
-        if div_type == 'classic':
-            # CD-: قیمت بالاتر، هیستوگرام پایین‌تر، هر دو مثبت
-            hist_ok = (p2['price'] > p1['price'] and p2['hist'] < p1['hist'] and 
-                      p1['hist'] > 0 and p2['hist'] > 0)
-        else:  # hidden
-            # HD-: قیمت پایین‌تر، هیستوگرام بالاتر، هر دو مثبت
-            hist_ok = (p2['price'] < p1['price'] and p2['hist'] > p1['hist'] and 
-                      p1['hist'] > 0 and p2['hist'] > 0)
+    if direction == "SELL" and div_type == 'classic':
+        # CD-: قیمت بالاتر، هیستوگرام پایین‌تر، هر دو مثبت، تغییر رنگ
+        hist_ok = (p2['price'] > p1['price'] and 
+                  p2['hist'] < p1['hist'] and 
+                  p1['hist'] > 0 and p2['hist'] > 0 and
+                  check_macd_color_change(hist_series, bar1, bar2, True))
+    elif direction == "SELL" and div_type == 'hidden':
+        # HD-: قیمت پایین‌تر، هیستوگرام بالاتر، هر دو مثبت، تغییر رنگ
+        hist_ok = (p2['price'] < p1['price'] and 
+                  p2['hist'] > p1['hist'] and 
+                  p1['hist'] > 0 and p2['hist'] > 0 and
+                  check_macd_color_change(hist_series, bar1, bar2, True))
+    elif direction == "BUY" and div_type == 'classic':
+        # CD+: قیمت پایین‌تر، هیستوگرام بالاتر، هر دو منفی، تغییر رنگ
+        hist_ok = (p2['price'] < p1['price'] and 
+                  p2['hist'] > p1['hist'] and 
+                  p1['hist'] < 0 and p2['hist'] < 0 and
+                  check_macd_color_change(hist_series, bar1, bar2, False))
+    elif direction == "BUY" and div_type == 'hidden':
+        # HD+: قیمت بالاتر، هیستوگرام پایین‌تر، هر دو منفی، تغییر رنگ
+        hist_ok = (p2['price'] > p1['price'] and 
+                  p2['hist'] < p1['hist'] and 
+                  p1['hist'] < 0 and p2['hist'] < 0 and
+                  check_macd_color_change(hist_series, bar1, bar2, False))
+    else:
+        hist_ok = False
     
     if hist_ok:
         score += 1
@@ -864,7 +884,7 @@ def calculate_divergence_score(p1, p2, div_type, direction, bar1, bar2, hist_ser
         details.append("❌ Price Action")
     
     # ------------------------------------------------------------------
-    # شرط ۶: روند (مطابق Pine با >= و <=)
+    # شرط ۶: روند (مطابق Pine با > و <)
     # ------------------------------------------------------------------
     if direction == "BUY":
         if div_type == 'classic':
@@ -892,7 +912,6 @@ def calculate_divergence_score(p1, p2, div_type, direction, bar1, bar2, hist_ser
 def classify_signal(score):
     if score >= 5: return "🟢", "Ideal"
     elif score >= 4: return "🟡", "Custom"
-    elif score >= 3: return "⚪", "Minimal"
     else: return None, None
 
 # =====================================================================================
@@ -1195,7 +1214,7 @@ def save_debug_log_to_file(symbol, debug_log_lines):
         logger.error(f"[DEBUG FILE] Error writing log: {e}")
 
 # =====================================================================================
-# اصلاح ۵: تابع تشخیص سیگنال با تشخیص نوع واگرایی
+# تابع تشخیص سیگنال با تشخیص نوع واگرایی
 # =====================================================================================
 def detect_signal(df, state, symbol, debug=False):
     debug_log = []
@@ -1317,7 +1336,7 @@ def detect_signal(df, state, symbol, debug=False):
     buy_details = sell_details = []
 
     # ==================================================================
-    # اصلاح: تشخیص نوع واگرایی و بررسی با MULTIPLE PREVIOUS PIVOTS
+    # تشخیص نوع واگرایی و بررسی با MULTIPLE PREVIOUS PIVOTS
     # ==================================================================
     
     def check_bar_distance(bar1, bar2):
@@ -1479,7 +1498,7 @@ def detect_signal(df, state, symbol, debug=False):
         log(f"   ⚪ No signal")
 
     # ------------------------------------------------------------------
-    # DEBUG LOG
+    # DEBUG LOG (مطابق با فرمت Pine Script)
     # ------------------------------------------------------------------
     log("   " + "=" * 70)
     log("   🔬 FULL DEBUG LOG (Pine-Exact)")
@@ -1515,6 +1534,16 @@ def detect_signal(df, state, symbol, debug=False):
         log(f"      Score={sell_score}/5, Type={sell_label}")
     else:
         log(f"      ❌ NO SIGNAL — conditions not met")
+    
+    # نمایش جزئیات شروط (مشابه Pine Script)
+    log("")
+    log("   📋 CONDITIONS CHECK:")
+    if buy_signal:
+        for detail in buy_details:
+            log(f"      {detail}")
+    elif sell_signal:
+        for detail in sell_details:
+            log(f"      {detail}")
     
     log("   " + "=" * 70)
 
@@ -1555,9 +1584,6 @@ def detect_signal(df, state, symbol, debug=False):
 # =====================================================================================
 # ادامه کدهای قبلی (بدون تغییر)
 # =====================================================================================
-# track_open_signals, analyze_and_execute, main_loop, health, و __main__
-# (این بخش‌ها بدون تغییر باقی می‌مانند)
-
 def track_open_signals(exchange):
     history = load_history()
     open_trades_in_history = [t for t in history if t.get('result') is None]
@@ -1805,13 +1831,13 @@ if __name__ == "__main__":
     hashtag_list = "\n".join([f"• {v} → {k}" for k, v in HASHTAGS.items()])
     send_telegram_message(
         f"🤖 DTM Pro — آنلاین {HASHTAGS['startup']}\n\n"
-        f"🧠 DTM Divergence (Pine Script Mirror — Fixed)\n"
+        f"🧠 DTM Divergence (Pine Script Mirror — Fully Fixed)\n"
         f"📊 سیگنال + ترید خودکار\n\n"
         f"⚙️ Pivot: 5/3 (Fast) | Multi-Pivot: {MAX_HISTORICAL_PIVOTS} prev | Range: {MIN_BARS_BETWEEN_PIVOTS}-{MAX_BARS_BETWEEN_PIVOTS} bars\n"
         f"🔧 ETH=50x | LTC/DOGE=75x\n\n"
         f"✅ اصلاحات اعمال شده:\n"
-        f"• شرط روند: >= (مطابق Pine)\n"
-        f"• MACD Hist: بدون color change\n"
+        f"• شرط روند: > (مطابق Pine)\n"
+        f"• MACD Color Change: برگردانده شد (مطابق Pine)\n"
         f"• تشخیص نوع واگرایی: Classic/Hidden\n"
         f"• ATR در کندل تأیید\n"
         f"• حد فاصله پیوت‌ها: {MIN_BARS_BETWEEN_PIVOTS} bars\n"
