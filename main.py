@@ -753,11 +753,10 @@ def round_price(price, symbol):
 # اصلاح ۴: سیستم امتیازدهی مطابق Pine (بدون color change)
 # =====================================================================================
 def calculate_divergence_score(p1, p2, div_type, direction, bar1, bar2, hist_series, high_series, low_series, df_indexed, atr_series, close):
-    """
+    
     div_type: 'classic' or 'hidden'
     direction: 'BUY' or 'SELL'
-    مطابق با Pine Script - ۶ شرط مجزا
-    """
+    
     details = []
     score = 0
     
