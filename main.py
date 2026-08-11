@@ -10,7 +10,7 @@ DTM Divergence Auto-Trading Bot - TheTrueTrade (نسخه هیبریدی)
 - عمق داده 5000 کندل (معادل حساب رایگان TradingView)
 - رفع درز State پیوت‌ها (start_bar=0 همیشه)
 - RSI/MACD در همان کندل Pivot
-- شرط روند: تفاضل مقدار برازش دو رگرسیون (مثل ta.linreg)
+- شرط روند: تفاضل مقدار برازش دو رگرسیون (مثل ta.linreg) با > و <
 - کندل تأییدیه: روی کندل تأیید (bar2 + RIGHT_BARS)
 - رفع Off-by-one در mid_peak/mid_trough
 - رفع فرمول avg_body در Price Action
@@ -19,6 +19,8 @@ DTM Divergence Auto-Trading Bot - TheTrueTrade (نسخه هیبریدی)
 - **FIXED**: تشخیص نوع واگرایی (Classic/Hidden)
 - **FIXED**: ATR در کندل تأیید
 - **FIXED**: حد فاصله پیوت‌ها = LEFT_BARS + 1
+- **FIXED**: اسکن کامل همه کندل‌ها برای پیدا کردن پیوت‌های جدید (مطابق Pine)
+- **FIXED**: ذخیره و بازیابی صحیح state بین اجراها
 - رفع Gating: RSI + MACD Line + MACD Histogram هر سه اجباری
 - رفع فرمول فیبوناچی
 - **FIXED [CATCH-UP]**: بررسی همه پیوت‌های جدید با پیوت قبلی‌شان (حلقه روی new_pivots)
@@ -560,9 +562,6 @@ def _linreg_end(y):
     slope, intercept = np.polyfit(x, y, 1)
     return intercept + slope * (len(y) - 1)
 
-# =====================================================================================
-# اصلاح ۱: شرط روند با > (مطابق Pine - برگردانده شده)
-# =====================================================================================
 def is_trending_up(close, ref_bar, lookback=TREND_LOOKBACK, slope_min_pct=TREND_SLOPE_MIN_PCT):
     """تشخیص روند صعودی - مطابق Pine با >"""
     if ref_bar is None or ref_bar - 2 * lookback + 1 < 0:
@@ -612,9 +611,6 @@ def resolve_bar_from_ts(df_indexed, ts):
         return None
     return df_indexed.index.get_loc(ts)
 
-# =====================================================================================
-# اصلاح ۲: تابع MACD Color Change (برگردانده شده - مطابق Pine)
-# =====================================================================================
 def check_macd_color_change(hist_series, bar1, bar2, need_negative_phase):
     """
     بررسی تغییر رنگ MACD هیستوگرام بین دو پیوت (مطابق Pine)
@@ -760,9 +756,6 @@ def round_price(price, symbol):
     rounded = round(price / tick) * tick
     return round(rounded, precision)
 
-# =====================================================================================
-# اصلاح ۳: سیستم امتیازدهی مطابق Pine (با MACD Color Change)
-# =====================================================================================
 def calculate_divergence_score(p1, p2, div_type, direction, bar1, bar2, hist_series, high_series, low_series, df_indexed, atr_series, close):
     """
     div_type: 'classic' or 'hidden'
@@ -976,22 +969,30 @@ SYMBOLS = ["LTCUSDT", "DOGEUSDT", "ETHUSDT"]
 SYMBOL_STATES = {s: SymbolState() for s in SYMBOLS}
 
 def save_states():
+    """ذخیره state در فایل"""
     data = {s: SYMBOL_STATES[s].to_dict() for s in SYMBOLS}
-    with open(STATE_FILE, 'w') as f:
-        json.dump(data, f, indent=2)
+    try:
+        with open(STATE_FILE, 'w') as f:
+            json.dump(data, f, indent=2)
+        logger.info(f"[STATE] Saved states to {STATE_FILE}")
+    except Exception as e:
+        logger.error(f"[STATE] Error saving states: {e}")
 
 def load_states():
+    """بارگذاری state از فایل"""
     global SYMBOL_STATES
     if os.path.exists(STATE_FILE):
         try:
-            with open(STATE_FILE) as f:
+            with open(STATE_FILE, 'r') as f:
                 data = json.load(f)
             for s in SYMBOLS:
                 if s in data:
                     SYMBOL_STATES[s] = SymbolState.from_dict(data[s])
-            logger.info(f"[STATE] Loaded pivot states from {STATE_FILE}")
+            logger.info(f"[STATE] Loaded states from {STATE_FILE}")
         except Exception as e:
             logger.error(f"[STATE] Error loading states: {e}")
+    else:
+        logger.info(f"[STATE] No state file found, starting fresh")
 
 # =====================================================================================
 # مدیریت تاریخچه
@@ -1214,7 +1215,7 @@ def save_debug_log_to_file(symbol, debug_log_lines):
         logger.error(f"[DEBUG FILE] Error writing log: {e}")
 
 # =====================================================================================
-# تابع تشخیص سیگنال با تشخیص نوع واگرایی
+# تابع تشخیص سیگنال با اسکن کامل همه کندل‌ها (مطابق Pine)
 # =====================================================================================
 def detect_signal(df, state, symbol, debug=False):
     debug_log = []
@@ -1271,62 +1272,54 @@ def detect_signal(df, state, symbol, debug=False):
     pivot_low = find_pivot_low(low, LEFT_BARS, RIGHT_BARS)
 
     # ------------------------------------------------------------------
-    # 3. TRUE BAR-BY-BAR: only the newest confirmation candidate
-    #    A pivot confirmed on bar i means real pivot is at i - RIGHT_BARS
+    # 3. اسکن کامل همه کندل‌ها برای پیدا کردن پیوت‌های جدید (مطابق Pine)
     # ------------------------------------------------------------------
-    last = n - 1
-    real_pivot_candidate = last - RIGHT_BARS
-
-    if real_pivot_candidate < LEFT_BARS:
-        log(f"   ⏭️ Not enough bars for pivot confirmation")
-        return None, None, None, None, False, None, None, None, []
-
     existing_high_ts = {p['ts'] for p in state.pivot_highs}
     existing_low_ts = {p['ts'] for p in state.pivot_lows}
 
-    new_pivots_high = []
-    new_pivots_low = []
+    all_new_pivots_high = []
+    all_new_pivots_low = []
 
-    # Check whether a NEW pivot was confirmed exactly on this bar
-    ts_candidate = closed_df_indexed.index[real_pivot_candidate]
+    # اسکن تمام کندل‌ها برای پیدا کردن پیوت‌های جدید
+    for i in range(LEFT_BARS, n - RIGHT_BARS):
+        ts = closed_df_indexed.index[i]
+        if not pd.isna(pivot_high.iloc[i]) and ts not in existing_high_ts:
+            all_new_pivots_high.append({
+                'ts': ts,
+                'price': float(pivot_high.iloc[i]),
+                'rsi': float(rsi_val.iloc[i]),
+                'macdline': float(macd_line.iloc[i]),
+                'hist': float(hist_line.iloc[i]),
+                'bar': i
+            })
+        if not pd.isna(pivot_low.iloc[i]) and ts not in existing_low_ts:
+            all_new_pivots_low.append({
+                'ts': ts,
+                'price': float(pivot_low.iloc[i]),
+                'rsi': float(rsi_val.iloc[i]),
+                'macdline': float(macd_line.iloc[i]),
+                'hist': float(hist_line.iloc[i]),
+                'bar': i
+            })
 
-    if not pd.isna(pivot_high.iloc[real_pivot_candidate]) and ts_candidate not in existing_high_ts:
-        new_pivots_high.append({
-            'ts': ts_candidate,
-            'price': float(pivot_high.iloc[real_pivot_candidate]),
-            'rsi': float(rsi_val.iloc[real_pivot_candidate]),
-            'macdline': float(macd_line.iloc[real_pivot_candidate]),
-            'hist': float(hist_line.iloc[real_pivot_candidate]),
-            'bar': real_pivot_candidate
-        })
-
-    if not pd.isna(pivot_low.iloc[real_pivot_candidate]) and ts_candidate not in existing_low_ts:
-        new_pivots_low.append({
-            'ts': ts_candidate,
-            'price': float(pivot_low.iloc[real_pivot_candidate]),
-            'rsi': float(rsi_val.iloc[real_pivot_candidate]),
-            'macdline': float(macd_line.iloc[real_pivot_candidate]),
-            'hist': float(hist_line.iloc[real_pivot_candidate]),
-            'bar': real_pivot_candidate
-        })
-
-    # Update state ONLY if a new pivot is confirmed on this bar
-    if new_pivots_high:
-        state.pivot_highs.extend(new_pivots_high)
+    # اضافه کردن همه پیوت‌های جدید به state
+    if all_new_pivots_high:
+        state.pivot_highs.extend(all_new_pivots_high)
         if len(state.pivot_highs) > 500:
             state.pivot_highs = state.pivot_highs[-500:]
-    if new_pivots_low:
-        state.pivot_lows.extend(new_pivots_low)
+    if all_new_pivots_low:
+        state.pivot_lows.extend(all_new_pivots_low)
         if len(state.pivot_lows) > 500:
             state.pivot_lows = state.pivot_lows[-500:]
 
+    last = n - 1
     state.last_processed_ts = closed_df_indexed.index[last]
 
-    log(f"   n={n}, last={last}, real_pivot_candidate={real_pivot_candidate}")
-    log(f"   new_high={len(new_pivots_high)}, new_low={len(new_pivots_low)} | mem: H={len(state.pivot_highs)} L={len(state.pivot_lows)}")
+    log(f"   n={n}, last={last}")
+    log(f"   all_new_high={len(all_new_pivots_high)}, all_new_low={len(all_new_pivots_low)} | mem: H={len(state.pivot_highs)} L={len(state.pivot_lows)}")
 
-    early_signal = len(new_pivots_high) > 0 or len(new_pivots_low) > 0
-    entry_price = float(close.iloc[last])   # close of the confirmation bar
+    early_signal = len(all_new_pivots_high) > 0 or len(all_new_pivots_low) > 0
+    entry_price = float(close.iloc[last])
 
     buy_signal = sell_signal = None
     buy_emoji = sell_emoji = None
@@ -1336,7 +1329,7 @@ def detect_signal(df, state, symbol, debug=False):
     buy_details = sell_details = []
 
     # ==================================================================
-    # تشخیص نوع واگرایی و بررسی با MULTIPLE PREVIOUS PIVOTS
+    # تشخیص واگرایی با استفاده از همه پیوت‌های موجود در state
     # ==================================================================
     
     def check_bar_distance(bar1, bar2):
@@ -1344,21 +1337,15 @@ def detect_signal(df, state, symbol, debug=False):
         return MIN_BARS_BETWEEN_PIVOTS <= distance <= MAX_BARS_BETWEEN_PIVOTS
 
     # ------------------------------------------------------------------
-    # BUY SIGNAL: Check new pivot low against MULTIPLE previous pivot lows
+    # BUY SIGNAL: بررسی همه پیوت‌های پایین (Lows)
     # ------------------------------------------------------------------
-    if len(new_pivots_low) > 0 and len(state.pivot_lows) >= 2:
-        for new_pl in new_pivots_low:
-            idx = next((i for i, p in enumerate(state.pivot_lows) if p['ts'] == new_pl['ts']), None)
-            if idx is None:
-                continue
-            
-            best_buy_score = 0
-            best_buy_pair = None
-            best_div_type = None
-            
+    if len(state.pivot_lows) >= 2:
+        # بررسی آخرین پیوت با همه پیوت‌های قبلی
+        for idx in range(len(state.pivot_lows) - 1, -1, -1):
+            pl_2 = state.pivot_lows[idx]
+            # پیدا کردن پیوت‌های قبلی
             for prev_idx in range(max(0, idx - MAX_HISTORICAL_PIVOTS), idx):
                 pl_1 = state.pivot_lows[prev_idx]
-                pl_2 = state.pivot_lows[idx]
                 
                 bar1 = resolve_bar_from_ts(closed_df_indexed, pl_1['ts'])
                 bar2 = resolve_bar_from_ts(closed_df_indexed, pl_2['ts'])
@@ -1367,7 +1354,6 @@ def detect_signal(df, state, symbol, debug=False):
                     continue
                 
                 if not check_bar_distance(bar1, bar2):
-                    log(f"   ⏭️ Skipping pivot pair: distance={abs(bar2-bar1)} bars")
                     continue
                 
                 # تشخیص نوع واگرایی Buy
@@ -1383,7 +1369,6 @@ def detect_signal(df, state, symbol, debug=False):
                 else:
                     continue
                 
-                # محاسبه امتیاز با نوع واگرایی مشخص
                 score, details = calculate_divergence_score(
                     pl_1, pl_2, div_type, "BUY", bar1, bar2, 
                     hist_line, high, low, closed_df_indexed, atr14, close
@@ -1391,16 +1376,13 @@ def detect_signal(df, state, symbol, debug=False):
                 
                 log(f"      Score: {score}/5")
                 
-                if score >= 3 and score > best_buy_score:
-                    best_buy_score = score
-                    best_buy_pair = (pl_1, pl_2, bar1, bar2, details)
-                    best_div_type = div_type
-            
-            if best_buy_pair and best_buy_score >= 3:
-                buy_emoji, buy_label = classify_signal(best_buy_score)
-                if buy_emoji:
-                    # ATR در کندل تأیید (مطابق Pine)
-                    confirm_bar = best_buy_pair[3] + RIGHT_BARS
+                if score >= 3 and score > buy_score:
+                    buy_score = score
+                    buy_details = details
+                    buy_signal = "BUY"
+                    buy_emoji, buy_label = classify_signal(score)
+                    
+                    confirm_bar = bar2 + RIGHT_BARS
                     if confirm_bar < len(atr14):
                         atr_at_confirm = atr14.iloc[confirm_bar]
                     else:
@@ -1412,29 +1394,20 @@ def detect_signal(df, state, symbol, debug=False):
                     if stop and tp_raw:
                         buy_stop = stop
                         buy_target = resolve_final_target(entry_price, stop, tp_raw, "long")
-                        buy_signal = "BUY"
-                        buy_score = best_buy_score
-                        buy_details = best_buy_pair[4]
-                        log(f"   🔵 BUY signal selected: {best_div_type} | score={best_buy_score}/5 ✅")
+                        log(f"   🔵 BUY signal selected: {div_type} | score={score}/5 ✅")
                         log(f"   Entry={entry_price:.4f}, SL={stop:.4f}, TP={buy_target:.4f}")
                         break
+            if buy_signal:
+                break
 
     # ------------------------------------------------------------------
-    # SELL SIGNAL: Check new pivot high against MULTIPLE previous pivot highs
+    # SELL SIGNAL: بررسی همه پیوت‌های بالا (Highs)
     # ------------------------------------------------------------------
-    if not buy_signal and len(new_pivots_high) > 0 and len(state.pivot_highs) >= 2:
-        for new_ph in new_pivots_high:
-            idx = next((i for i, p in enumerate(state.pivot_highs) if p['ts'] == new_ph['ts']), None)
-            if idx is None:
-                continue
-            
-            best_sell_score = 0
-            best_sell_pair = None
-            best_div_type = None
-            
+    if not buy_signal and len(state.pivot_highs) >= 2:
+        for idx in range(len(state.pivot_highs) - 1, -1, -1):
+            ph_2 = state.pivot_highs[idx]
             for prev_idx in range(max(0, idx - MAX_HISTORICAL_PIVOTS), idx):
                 ph_1 = state.pivot_highs[prev_idx]
-                ph_2 = state.pivot_highs[idx]
                 
                 bar1 = resolve_bar_from_ts(closed_df_indexed, ph_1['ts'])
                 bar2 = resolve_bar_from_ts(closed_df_indexed, ph_2['ts'])
@@ -1443,10 +1416,8 @@ def detect_signal(df, state, symbol, debug=False):
                     continue
                 
                 if not check_bar_distance(bar1, bar2):
-                    log(f"   ⏭️ Skipping pivot pair: distance={abs(bar2-bar1)} bars")
                     continue
                 
-                # تشخیص نوع واگرایی Sell
                 is_classic = ph_2['price'] > ph_1['price'] and ph_2['rsi'] < ph_1['rsi']
                 is_hidden = ph_2['price'] < ph_1['price'] and ph_2['rsi'] > ph_1['rsi']
                 
@@ -1466,16 +1437,13 @@ def detect_signal(df, state, symbol, debug=False):
                 
                 log(f"      Score: {score}/5")
                 
-                if score >= 3 and score > best_sell_score:
-                    best_sell_score = score
-                    best_sell_pair = (ph_1, ph_2, bar1, bar2, details)
-                    best_div_type = div_type
-            
-            if best_sell_pair and best_sell_score >= 3:
-                sell_emoji, sell_label = classify_signal(best_sell_score)
-                if sell_emoji:
-                    # ATR در کندل تأیید (مطابق Pine)
-                    confirm_bar = best_sell_pair[3] + RIGHT_BARS
+                if score >= 3 and score > sell_score:
+                    sell_score = score
+                    sell_details = details
+                    sell_signal = "SELL"
+                    sell_emoji, sell_label = classify_signal(score)
+                    
+                    confirm_bar = bar2 + RIGHT_BARS
                     if confirm_bar < len(atr14):
                         atr_at_confirm = atr14.iloc[confirm_bar]
                     else:
@@ -1487,18 +1455,17 @@ def detect_signal(df, state, symbol, debug=False):
                     if stop and tp_raw:
                         sell_stop = stop
                         sell_target = resolve_final_target(entry_price, stop, tp_raw, "short")
-                        sell_signal = "SELL"
-                        sell_score = best_sell_score
-                        sell_details = best_sell_pair[4]
-                        log(f"   🔴 SELL signal selected: {best_div_type} | score={best_sell_score}/5 ✅")
+                        log(f"   🔴 SELL signal selected: {div_type} | score={score}/5 ✅")
                         log(f"   Entry={entry_price:.4f}, SL={stop:.4f}, TP={sell_target:.4f}")
                         break
+            if sell_signal:
+                break
 
     if not buy_signal and not sell_signal:
         log(f"   ⚪ No signal")
 
     # ------------------------------------------------------------------
-    # DEBUG LOG (مطابق با فرمت Pine Script)
+    # DEBUG LOG
     # ------------------------------------------------------------------
     log("   " + "=" * 70)
     log("   🔬 FULL DEBUG LOG (Pine-Exact)")
@@ -1509,8 +1476,8 @@ def detect_signal(df, state, symbol, debug=False):
     log(f"      Time: {format_iran_time()}")
     log(f"      Total Candles (n): {n}")
     log(f"      Multi-Pivot Settings: MaxHistorical={MAX_HISTORICAL_PIVOTS}, MinBars={MIN_BARS_BETWEEN_PIVOTS}, MaxBars={MAX_BARS_BETWEEN_PIVOTS}")
-    log(f"      New Pivot Highs: {len(new_pivots_high)}")
-    log(f"      New Pivot Lows: {len(new_pivots_low)}")
+    log(f"      New Pivot Highs: {len(all_new_pivots_high)}")
+    log(f"      New Pivot Lows: {len(all_new_pivots_low)}")
     log(f"      Total Pivot Highs in Memory: {len(state.pivot_highs)}")
     log(f"      Total Pivot Lows in Memory: {len(state.pivot_lows)}")
     log("")
@@ -1535,7 +1502,6 @@ def detect_signal(df, state, symbol, debug=False):
     else:
         log(f"      ❌ NO SIGNAL — conditions not met")
     
-    # نمایش جزئیات شروط (مشابه Pine Script)
     log("")
     log("   📋 CONDITIONS CHECK:")
     if buy_signal:
@@ -1564,7 +1530,7 @@ def detect_signal(df, state, symbol, debug=False):
         state.telegram_log_count += 1
         try:
             telegram_debug = "\n".join(debug_log)
-            prefix = "🟢" if len(new_pivots_high)+len(new_pivots_low) > 0 else "ℹ️"
+            prefix = "🟢" if len(all_new_pivots_high)+len(all_new_pivots_low) > 0 else "ℹ️"
             send_telegram_message(
                 f"{prefix} لاگ #{state.telegram_log_count} — {symbol} {HASHTAGS['log']}\n"
                 f"━━━━━━━━━━━━━━━━━━━━━━\n"
@@ -1782,6 +1748,7 @@ def analyze_and_execute():
         except Exception as e:
             logger.error(f"[ERROR] {symbol}: {e}")
     
+    # ذخیره state بعد از هر اجرا
     save_states()
 
 def main_loop():
@@ -1836,6 +1803,8 @@ if __name__ == "__main__":
         f"⚙️ Pivot: 5/3 (Fast) | Multi-Pivot: {MAX_HISTORICAL_PIVOTS} prev | Range: {MIN_BARS_BETWEEN_PIVOTS}-{MAX_BARS_BETWEEN_PIVOTS} bars\n"
         f"🔧 ETH=50x | LTC/DOGE=75x\n\n"
         f"✅ اصلاحات اعمال شده:\n"
+        f"• اسکن کامل همه کندل‌ها برای پیدا کردن پیوت‌های جدید (مطابق Pine)\n"
+        f"• ذخیره و بازیابی صحیح state بین اجراها\n"
         f"• شرط روند: > (مطابق Pine)\n"
         f"• MACD Color Change: برگردانده شد (مطابق Pine)\n"
         f"• تشخیص نوع واگرایی: Classic/Hidden\n"
