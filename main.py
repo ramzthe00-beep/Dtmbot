@@ -40,6 +40,11 @@ DTM Divergence Auto-Trading Bot - TheTrueTrade (نسخه هیبریدی)
 - گزارش واقعی صرافی (معاملات + موجودی)
 - **SECURITY**: کلیدهای API فقط از متغیر محیطی خوانده میشن
 - **DEBUG**: Full Debug Log (فایل `full_debug_log.txt`)
+- **FIXED [v2.0]**: Base3 = RSI+MACDl+MACDh (روند امتیازی شد)
+- **FIXED [v2.0]**: MACD Color Change با منطق sign-based
+- **FIXED [v2.0]**: فیبوناچی از کندل تأیید جستجو میکند
+- **FIXED [v2.0]**: همه ۴ نوع واگرایی همزمان بررسی میشوند
+- **FIXED [v2.0]**: جلوگیری از تقسیم بر صفر در Price Action
 """
 
 import os
@@ -134,7 +139,7 @@ BIG_CANDLE_MULTIPLIER = 1.5
 
 API_RETURNS_OPEN_CANDLE = False
 
-HISTORY_BARS = 100
+HISTORY_BARS = 1000
 
 # =====================================================================================
 # Tick Size و Price Precision
@@ -617,29 +622,56 @@ def resolve_bar_from_ts(df_indexed, ts):
     return df_indexed.index.get_loc(ts)
 
 def check_macd_color_change(hist_series, bar1, bar2, need_negative_phase):
+    """
+    مطابق Pine Script: ta.crossover و ta.crossunder
+    بررسی تغییر علامت از مثبت به منفی (یا برعکس) بین دو پیوت
+    با منطق sign-based برای تشخیص دقیق تغییر فاز
+    """
     if bar1 is None or bar2 is None or bar2 <= bar1:
         return False
-    for i in range(bar1 + 1, bar2):
-        if i < len(hist_series):
-            h = hist_series.iloc[i]
-            if need_negative_phase and h < 0:
+    
+    prev_sign = None
+    for i in range(bar1 + 1, bar2 + 1):
+        if i >= len(hist_series):
+            break
+        current_val = hist_series.iloc[i]
+        current_sign = 1 if current_val > 0 else (-1 if current_val < 0 else 0)
+        
+        if prev_sign is not None and current_sign != 0 and prev_sign != 0:
+            # تغییر از مثبت به منفی (برای need_negative_phase=True)
+            if need_negative_phase and prev_sign > 0 and current_sign < 0:
                 return True
-            if not need_negative_phase and h > 0:
+            # تغییر از منفی به مثبت (برای need_negative_phase=False)
+            if not need_negative_phase and prev_sign < 0 and current_sign > 0:
                 return True
+        
+        if current_sign != 0:
+            prev_sign = current_sign
+    
     return False
 
 def find_trend_start_low(low_series, ref_bar, search_bars=FIB_SEARCH_BARS):
+    """
+    مطابق Pine Script: lowest(low, FIB_SEARCH_BARS)[RIGHT_BARS]
+    یعنی از کندل تأیید به عقب جستجو می‌کند
+    """
     if ref_bar is None:
         return None
-    start = max(0, ref_bar - search_bars + 1)
-    window = low_series.iloc[start:ref_bar + 1]
+    confirm_bar = min(ref_bar + RIGHT_BARS, len(low_series) - 1)
+    start = max(0, confirm_bar - search_bars + 1)
+    window = low_series.iloc[start:confirm_bar + 1]
     return window.min() if len(window) > 0 else None
 
 def find_trend_start_high(high_series, ref_bar, search_bars=FIB_SEARCH_BARS):
+    """
+    مطابق Pine Script: highest(high, FIB_SEARCH_BARS)[RIGHT_BARS]
+    یعنی از کندل تأیید به عقب جستجو می‌کند
+    """
     if ref_bar is None:
         return None
-    start = max(0, ref_bar - search_bars + 1)
-    window = high_series.iloc[start:ref_bar + 1]
+    confirm_bar = min(ref_bar + RIGHT_BARS, len(high_series) - 1)
+    start = max(0, confirm_bar - search_bars + 1)
+    window = high_series.iloc[start:confirm_bar + 1]
     return window.max() if len(window) > 0 else None
 
 def check_fib_level(fib_start, fib_end, target_price, is_retrace_down,
@@ -674,7 +706,7 @@ def check_price_action(df, confirm_bar, direction, atr_val):
     window = df.iloc[start_idx:confirm_bar + 1]
     avg_body = (window['close'] - window['open']).abs().mean()
     if pd.isna(avg_body) or avg_body == 0:
-        avg_body = candle_body
+        avg_body = candle_body if candle_body > 0 else 0.00001  # جلوگیری از تقسیم بر صفر
     pa = False
     pa_reasons = []
     if direction == "BUY":
@@ -754,25 +786,35 @@ def round_price(price, symbol):
     return round(rounded, precision)
 
 # =====================================================================================
-# PINE-EXACT GATE: ۴ شرط اجباری + ۲ شرط امتیازی
+# PINE-EXACT GATE: Base3 = RSI + MACD Line + MACD Hist (اجباری)
+# Trend, Fib, PA = امتیازی
 # =====================================================================================
 def calculate_divergence_score(p1, p2, div_type, direction, bar1, bar2, hist_series, high_series, low_series, df_indexed, atr_series, close):
+    """
+    مطابق Pine Script:
+    Base3 = RSI + MACD Line + MACD Histogram (سه شرط اجباری)
+    Trend, Fibonacci, Price Action = امتیازی
+    """
     details = []
     
-    # شرط ۱: RSI (اجباری)
+    # ============================================================
+    # شرط ۱: RSI (اجباری - بخشی از Base3)
+    # ============================================================
     if direction == "BUY":
         if div_type == 'classic':
             rsi_ok = p2['price'] < p1['price'] and p2['rsi'] > p1['rsi']
-        else:
+        else:  # hidden
             rsi_ok = p2['price'] > p1['price'] and p2['rsi'] < p1['rsi']
-    else:
+    else:  # SELL
         if div_type == 'classic':
             rsi_ok = p2['price'] > p1['price'] and p2['rsi'] < p1['rsi']
-        else:
+        else:  # hidden
             rsi_ok = p2['price'] < p1['price'] and p2['rsi'] > p1['rsi']
     details.append("✅ RSI" if rsi_ok else "❌ RSI")
     
-    # شرط ۲: MACD Line (اجباری)
+    # ============================================================
+    # شرط ۲: MACD Line (اجباری - بخشی از Base3)
+    # ============================================================
     if direction == "BUY":
         if div_type == 'classic':
             macd_ok = p2['price'] < p1['price'] and p2['macdline'] > p1['macdline']
@@ -785,32 +827,47 @@ def calculate_divergence_score(p1, p2, div_type, direction, bar1, bar2, hist_ser
             macd_ok = p2['price'] < p1['price'] and p2['macdline'] > p1['macdline']
     details.append("✅ MACD Line" if macd_ok else "❌ MACD Line")
     
-    # شرط ۳: MACD Histogram (اجباری)
+    # ============================================================
+    # شرط ۳: MACD Histogram (اجباری - بخشی از Base3)
+    # ============================================================
     if direction == "SELL" and div_type == 'classic':
-        hist_ok = (p2['price'] > p1['price'] and 
-                  p2['hist'] < p1['hist'] and 
-                  p1['hist'] > 0 and p2['hist'] > 0 and
-                  check_macd_color_change(hist_series, bar1, bar2, True))
+        # Classic Bearish: هر دو پیوت مثبت + واگرایی + تغییر رنگ به منفی
+        hist_ok = (p1['hist'] > 0 and p2['hist'] > 0 and 
+                   p2['hist'] < p1['hist'] and
+                   check_macd_color_change(hist_series, bar1, bar2, True))
     elif direction == "SELL" and div_type == 'hidden':
-        hist_ok = (p2['price'] < p1['price'] and 
-                  p2['hist'] > p1['hist'] and 
-                  p1['hist'] > 0 and p2['hist'] > 0 and
-                  check_macd_color_change(hist_series, bar1, bar2, True))
+        # Hidden Bearish: هر دو پیوت مثبت + واگرایی معکوس + تغییر رنگ به منفی
+        hist_ok = (p1['hist'] > 0 and p2['hist'] > 0 and 
+                   p2['hist'] > p1['hist'] and
+                   check_macd_color_change(hist_series, bar1, bar2, True))
     elif direction == "BUY" and div_type == 'classic':
-        hist_ok = (p2['price'] < p1['price'] and 
-                  p2['hist'] > p1['hist'] and 
-                  p1['hist'] < 0 and p2['hist'] < 0 and
-                  check_macd_color_change(hist_series, bar1, bar2, False))
+        # Classic Bullish: هر دو پیوت منفی + واگرایی + تغییر رنگ به مثبت
+        hist_ok = (p1['hist'] < 0 and p2['hist'] < 0 and 
+                   p2['hist'] > p1['hist'] and
+                   check_macd_color_change(hist_series, bar1, bar2, False))
     elif direction == "BUY" and div_type == 'hidden':
-        hist_ok = (p2['price'] > p1['price'] and 
-                  p2['hist'] < p1['hist'] and 
-                  p1['hist'] < 0 and p2['hist'] < 0 and
-                  check_macd_color_change(hist_series, bar1, bar2, False))
+        # Hidden Bullish: هر دو پیوت منفی + واگرایی معکوس + تغییر رنگ به مثبت
+        hist_ok = (p1['hist'] < 0 and p2['hist'] < 0 and 
+                   p2['hist'] < p1['hist'] and
+                   check_macd_color_change(hist_series, bar1, bar2, False))
     else:
         hist_ok = False
     details.append("✅ MACD Histogram" if hist_ok else "❌ MACD Histogram")
     
-    # شرط ۴: Trend (اجباری)
+    # ============================================================
+    # Base3 Gate: هر سه شرط RSI, MACD Line, MACD Histogram
+    # ============================================================
+    base3_ok = rsi_ok and macd_ok and hist_ok
+    if not base3_ok:
+        details.append("❌ Base3 برقرار نیست")
+        return 0, details
+    
+    # Base3 = 3 امتیاز پایه
+    score = 3
+    
+    # ============================================================
+    # شرط ۴: Trend (امتیازی - +1)
+    # ============================================================
     if direction == "BUY":
         if div_type == 'classic':
             trend_ok = is_trending_down(close, bar1)
@@ -821,35 +878,38 @@ def calculate_divergence_score(p1, p2, div_type, direction, bar1, bar2, hist_ser
             trend_ok = is_trending_up(close, bar1)
         else:
             trend_ok = is_trending_down(close, bar1)
-    details.append("✅ Trend" if trend_ok else "❌ Trend")
     
-    # PINE-EXACT GATE
-    mandatory_ok = rsi_ok and macd_ok and hist_ok and trend_ok
-    if not mandatory_ok:
-        details.append("❌ یکی از شروط اجباری برقرار نیست")
-        return 0, details
+    if trend_ok:
+        score += 1
+        details.append("✅ Trend")
+    else:
+        details.append("❌ Trend")
     
-    score = 4
-    
-    # Fibonacci (امتیازی)
+    # ============================================================
+    # شرط ۵: Fibonacci (امتیازی - +1)
+    # ============================================================
     if direction == "BUY":
         trend_start = find_trend_start_high(high_series, bar1)
         fib_ok = check_fib_level(trend_start, p1['price'], p2['price'], is_retrace_down=False)
     else:
         trend_start = find_trend_start_low(low_series, bar1)
         fib_ok = check_fib_level(trend_start, p1['price'], p2['price'], is_retrace_down=True)
+    
     if fib_ok:
         score += 1
         details.append("✅ Fibonacci")
     else:
         details.append("❌ Fibonacci")
     
-    # Price Action (امتیازی)
-    confirm_bar = bar2 + RIGHT_BARS
+    # ============================================================
+    # شرط ۶: Price Action (امتیازی - +1)
+    # ============================================================
+    confirm_bar = min(bar2 + RIGHT_BARS, len(df_indexed) - 1)
     if confirm_bar < len(df_indexed):
         pa_ok, pa_reasons = check_price_action(df_indexed, confirm_bar, direction, atr_series.iloc[confirm_bar])
     else:
         pa_ok, pa_reasons = False, []
+    
     if pa_ok:
         score += 1
         details.append(f"✅ Price Action ({', '.join(pa_reasons)})")
@@ -862,6 +922,7 @@ def classify_signal(score):
     if score >= 6: return "🟢", "Ideal"
     elif score >= 5: return "🟡", "Custom"
     elif score >= 4: return "⚪", "Minimal"
+    elif score >= 3: return "🔵", "Base3 Only"
     else: return None, None
 
 # =====================================================================================
@@ -1122,7 +1183,7 @@ def run_startup_diagnostic():
             diagnostic_log.append("🟢 تشخیص روند: فعال")
     except Exception as e:
         diagnostic_log.append(f"🔴 خطا: {str(e)[:50]}")
-    diagnostic_log.append("🟢 موتور امتیازدهی: آماده (Pine-Exact Gating)")
+    diagnostic_log.append("🟢 موتور امتیازدهی: Base3 + Trend/Fib/PA (Pine-Exact Gating v2.0)")
     diagnostic_log.append("🟢 اتصال به تلگرام")
     exchange = TrueTradePrivateExchange(API_KEY, API_SECRET, BASE_URL)
     conn = exchange.test_connection()
@@ -1165,7 +1226,7 @@ def save_debug_log_to_file(symbol, debug_log_lines):
         logger.error(f"[DEBUG FILE] Error writing log: {e}")
 
 # =====================================================================================
-# تابع تشخیص سیگنال — فقط ۲ پیوت آخر (مثل Pine)
+# تابع تشخیص سیگنال — همه ۴ نوع واگرایی همزمان بررسی میشوند
 # =====================================================================================
 def detect_signal(df, state, symbol, debug=False):
     debug_log = []
@@ -1260,15 +1321,12 @@ def detect_signal(df, state, symbol, debug=False):
     early_signal = len(new_pivots_high) > 0 or len(new_pivots_low) > 0
     entry_price = float(close.iloc[-1])
 
-    buy_signal = sell_signal = None
-    buy_emoji = sell_emoji = None
-    buy_label = sell_label = None
-    buy_score = sell_score = 0
-    buy_stop = buy_target = sell_stop = sell_target = None
-    buy_details = sell_details = []
-    buy_pivot1 = buy_pivot2 = sell_pivot1 = sell_pivot2 = None
-
-    # فقط ۲ پیوت آخر — دقیقاً مثل Pine
+    # لیست همه سیگنال‌های ممکن (همه ۴ نوع واگرایی همزمان بررسی میشوند)
+    signals = []
+    
+    # ================================================================
+    # بررسی واگرایی‌های صعودی (BUY) - Classic و Hidden
+    # ================================================================
     if len(state.pivot_lows) >= 2:
         pl_1 = state.pivot_lows[-2]
         pl_2 = state.pivot_lows[-1]
@@ -1276,85 +1334,127 @@ def detect_signal(df, state, symbol, debug=False):
         bar2 = resolve_bar_from_ts(closed_df_indexed, pl_2['ts'])
 
         if bar1 is not None and bar2 is not None and bar2 > bar1:
-            is_classic = pl_2['price'] < pl_1['price'] and pl_2['rsi'] > pl_1['rsi']
-            is_hidden = pl_2['price'] > pl_1['price'] and pl_2['rsi'] < pl_1['rsi']
+            # Classic Bullish: Lower Low قیمت + Higher Low RSI
+            is_classic_bull = pl_2['price'] < pl_1['price'] and pl_2['rsi'] > pl_1['rsi']
+            # Hidden Bullish: Higher Low قیمت + Lower Low RSI
+            is_hidden_bull = pl_2['price'] > pl_1['price'] and pl_2['rsi'] < pl_1['rsi']
             
-            div_type = 'classic' if is_classic else 'hidden' if is_hidden else None
-            
-            if div_type:
-                log(f"   🔵 BUY check: {div_type} | PL1={pl_1['price']:.4f} (RSI={pl_1['rsi']:.2f}) → PL2={pl_2['price']:.4f} (RSI={pl_2['rsi']:.2f})")
+            if is_classic_bull:
+                log(f"   🔵 CD+ check | PL1={pl_1['price']:.4f} (RSI={pl_1['rsi']:.2f}) → PL2={pl_2['price']:.4f} (RSI={pl_2['rsi']:.2f})")
                 score, details = calculate_divergence_score(
-                    pl_1, pl_2, div_type, "BUY", bar1, bar2,
+                    pl_1, pl_2, 'classic', 'BUY', bar1, bar2,
                     hist_line, high, low, closed_df_indexed, atr14, close
                 )
-                log(f"   🔵 BUY score={score}/6")
+                log(f"   🔵 CD+ score={score}/6")
                 for d in details:
                     log(f"      {d}")
-                
-                if score >= 4:
-                    buy_emoji, buy_label = classify_signal(score)
-                    if buy_emoji:
-                        confirm_bar = min(bar2 + RIGHT_BARS, len(atr14) - 1)
-                        atr_at_confirm = atr14.iloc[confirm_bar]
-                        stop, tp_raw, _ = compute_stop_and_targets(
-                            state.pivot_highs, state.pivot_lows, "long", closed_df_indexed, atr_at_confirm
-                        )
-                        if stop and tp_raw:
-                            buy_stop = stop
-                            buy_target = resolve_final_target(entry_price, stop, tp_raw, "long")
-                            buy_signal = "BUY"
-                            buy_score = score
-                            buy_details = details
-                            buy_pivot1 = pl_1
-                            buy_pivot2 = pl_2
-                            log(f"   🔵 BUY signal confirmed ✅")
+                if score >= 3:  # حداقل Base3
+                    signals.append({
+                        'type': 'BUY', 'div_type': 'classic', 'score': score,
+                        'details': details, 'p1': pl_1, 'p2': pl_2,
+                        'bar1': bar1, 'bar2': bar2
+                    })
+            
+            if is_hidden_bull:
+                log(f"   🔵 HD+ check | PL1={pl_1['price']:.4f} (RSI={pl_1['rsi']:.2f}) → PL2={pl_2['price']:.4f} (RSI={pl_2['rsi']:.2f})")
+                score, details = calculate_divergence_score(
+                    pl_1, pl_2, 'hidden', 'BUY', bar1, bar2,
+                    hist_line, high, low, closed_df_indexed, atr14, close
+                )
+                log(f"   🔵 HD+ score={score}/6")
+                for d in details:
+                    log(f"      {d}")
+                if score >= 3:
+                    signals.append({
+                        'type': 'BUY', 'div_type': 'hidden', 'score': score,
+                        'details': details, 'p1': pl_1, 'p2': pl_2,
+                        'bar1': bar1, 'bar2': bar2
+                    })
 
-    if not buy_signal and len(state.pivot_highs) >= 2:
+    # ================================================================
+    # بررسی واگرایی‌های نزولی (SELL) - Classic و Hidden
+    # ================================================================
+    if len(state.pivot_highs) >= 2:
         ph_1 = state.pivot_highs[-2]
         ph_2 = state.pivot_highs[-1]
         bar1 = resolve_bar_from_ts(closed_df_indexed, ph_1['ts'])
         bar2 = resolve_bar_from_ts(closed_df_indexed, ph_2['ts'])
 
         if bar1 is not None and bar2 is not None and bar2 > bar1:
-            is_classic = ph_2['price'] > ph_1['price'] and ph_2['rsi'] < ph_1['rsi']
-            is_hidden = ph_2['price'] < ph_1['price'] and ph_2['rsi'] > ph_1['rsi']
+            # Classic Bearish: Higher High قیمت + Lower High RSI
+            is_classic_bear = ph_2['price'] > ph_1['price'] and ph_2['rsi'] < ph_1['rsi']
+            # Hidden Bearish: Lower High قیمت + Higher High RSI
+            is_hidden_bear = ph_2['price'] < ph_1['price'] and ph_2['rsi'] > ph_1['rsi']
             
-            div_type = 'classic' if is_classic else 'hidden' if is_hidden else None
-            
-            if div_type:
-                log(f"   🔴 SELL check: {div_type} | PH1={ph_1['price']:.4f} (RSI={ph_1['rsi']:.2f}) → PH2={ph_2['price']:.4f} (RSI={ph_2['rsi']:.2f})")
+            if is_classic_bear:
+                log(f"   🔴 CD- check | PH1={ph_1['price']:.4f} (RSI={ph_1['rsi']:.2f}) → PH2={ph_2['price']:.4f} (RSI={ph_2['rsi']:.2f})")
                 score, details = calculate_divergence_score(
-                    ph_1, ph_2, div_type, "SELL", bar1, bar2,
+                    ph_1, ph_2, 'classic', 'SELL', bar1, bar2,
                     hist_line, high, low, closed_df_indexed, atr14, close
                 )
-                log(f"   🔴 SELL score={score}/6")
+                log(f"   🔴 CD- score={score}/6")
                 for d in details:
                     log(f"      {d}")
-                
-                if score >= 4:
-                    sell_emoji, sell_label = classify_signal(score)
-                    if sell_emoji:
-                        confirm_bar = min(bar2 + RIGHT_BARS, len(atr14) - 1)
-                        atr_at_confirm = atr14.iloc[confirm_bar]
-                        stop, tp_raw, _ = compute_stop_and_targets(
-                            state.pivot_highs, state.pivot_lows, "short", closed_df_indexed, atr_at_confirm
-                        )
-                        if stop and tp_raw:
-                            sell_stop = stop
-                            sell_target = resolve_final_target(entry_price, stop, tp_raw, "short")
-                            sell_signal = "SELL"
-                            sell_score = score
-                            sell_details = details
-                            sell_pivot1 = ph_1
-                            sell_pivot2 = ph_2
-                            log(f"   🔴 SELL signal confirmed ✅")
+                if score >= 3:  # حداقل Base3
+                    signals.append({
+                        'type': 'SELL', 'div_type': 'classic', 'score': score,
+                        'details': details, 'p1': ph_1, 'p2': ph_2,
+                        'bar1': bar1, 'bar2': bar2
+                    })
+            
+            if is_hidden_bear:
+                log(f"   🔴 HD- check | PH1={ph_1['price']:.4f} (RSI={ph_1['rsi']:.2f}) → PH2={ph_2['price']:.4f} (RSI={ph_2['rsi']:.2f})")
+                score, details = calculate_divergence_score(
+                    ph_1, ph_2, 'hidden', 'SELL', bar1, bar2,
+                    hist_line, high, low, closed_df_indexed, atr14, close
+                )
+                log(f"   🔴 HD- score={score}/6")
+                for d in details:
+                    log(f"      {d}")
+                if score >= 3:
+                    signals.append({
+                        'type': 'SELL', 'div_type': 'hidden', 'score': score,
+                        'details': details, 'p1': ph_1, 'p2': ph_2,
+                        'bar1': bar1, 'bar2': bar2
+                    })
 
-    if not buy_signal and not sell_signal:
-        log(f"   ⚪ No signal")
+    # ================================================================
+    # انتخاب بهترین سیگنال
+    # ================================================================
+    if signals:
+        # اولویت با امتیاز بالاتر، در صورت تساوی CD بر HD اولویت دارد
+        best = max(signals, key=lambda x: (x['score'], 1 if x['div_type'] == 'classic' else 0))
+        signal = best['type']
+        
+        confirm_bar = min(best['bar2'] + RIGHT_BARS, len(atr14) - 1)
+        atr_at_confirm = atr14.iloc[confirm_bar]
+        
+        direction = "long" if signal == "BUY" else "short"
+        stop, tp_raw, _ = compute_stop_and_targets(
+            state.pivot_highs, state.pivot_lows, direction, 
+            closed_df_indexed, atr_at_confirm
+        )
+        
+        if stop and tp_raw:
+            target = resolve_final_target(entry_price, stop, tp_raw, direction)
+            emoji, label = classify_signal(best['score'])
+            
+            log(f"   ✅ SIGNAL: {signal} {best['div_type']} | Score={best['score']}/6 | {label}")
+            log(f"      Entry={entry_price:.4f}, SL={stop:.4f}, TP={target:.4f}")
+            
+            # ذخیره لاگ در فایل
+            save_debug_log_to_file(symbol, debug_file_lines)
+            
+            return (signal, entry_price, stop, target, early_signal, 
+                    emoji, label, best['score'], best['details'],
+                    best['p1'], best['p2'])
+
+    if not signals:
+        log(f"   ⚪ No signal (none passed Base3)")
 
     # DEBUG LOG
     log("   " + "=" * 70)
-    log("   🔬 FULL DEBUG LOG (Pine-Exact Pivot + Gating)")
+    log("   🔬 FULL DEBUG LOG (Pine-Exact Pivot + Base3 Gating v2.0)")
     log("   " + "=" * 70)
     log(f"   📊 GENERAL:")
     log(f"      Symbol: {symbol}")
@@ -1373,21 +1473,14 @@ def detect_signal(df, state, symbol, debug=False):
     log(f"      ATR(14)[-1]: {atr14.iloc[-1]:.4f}")
     log("")
     log(f"   🏁 FINAL RESULT:")
-    if buy_signal:
-        log(f"      ✅ BUY SIGNAL | Score={buy_score}/6 | Type={buy_label}")
-        log(f"      Entry={entry_price:.4f}, SL={buy_stop:.4f}, TP={buy_target:.4f}")
-    elif sell_signal:
-        log(f"      ✅ SELL SIGNAL | Score={sell_score}/6 | Type={sell_label}")
-        log(f"      Entry={entry_price:.4f}, SL={sell_stop:.4f}, TP={sell_target:.4f}")
+    if signals:
+        best = max(signals, key=lambda x: (x['score'], 1 if x['div_type'] == 'classic' else 0))
+        log(f"      ✅ {best['type']} SIGNAL | Score={best['score']}/6 | Type={best['div_type']}")
+        log(f"      Details:")
+        for d in best['details']:
+            log(f"         {d}")
     else:
         log(f"      ❌ NO SIGNAL")
-    log("")
-    if buy_signal:
-        for d in buy_details:
-            log(f"      {d}")
-    elif sell_signal:
-        for d in sell_details:
-            log(f"      {d}")
     log("   " + "=" * 70)
 
     save_debug_log_to_file(symbol, debug_file_lines)
@@ -1418,10 +1511,6 @@ def detect_signal(df, state, symbol, debug=False):
         except Exception as e:
             logger.error(f"[TELEGRAM] {e}")
 
-    if buy_signal:
-        return "BUY", entry_price, buy_stop, buy_target, early_signal, buy_emoji, buy_label, buy_score, buy_details, buy_pivot1, buy_pivot2
-    elif sell_signal:
-        return "SELL", entry_price, sell_stop, sell_target, early_signal, sell_emoji, sell_label, sell_score, sell_details, sell_pivot1, sell_pivot2
     return None, None, None, None, early_signal, None, None, None, [], None, None
 
 # =====================================================================================
@@ -1683,11 +1772,11 @@ if __name__ == "__main__":
     hashtag_list = "\n".join([f"• {v} → {k}" for k, v in HASHTAGS.items()])
     send_telegram_message(
         f"🤖 DTM Pro — آنلاین {HASHTAGS['startup']}\n\n"
-        f"🧠 DTM Divergence (Pine Script Mirror — vFinal)\n"
+        f"🧠 DTM Divergence (Pine Script Mirror — v2.0)\n"
         f"📊 سیگنال + ترید خودکار\n\n"
         f"⚙️ Pivot: 5/3 (Pine-Exact: strict, value on confirmation bar)\n"
-        f"⚙️ Gating: 4-Mandatory AND (RSI+MACDLine+MACDHist+Trend)\n"
-        f"⚙️ فقط ۲ پیوت آخر بررسی میشن (مثل Pine)\n"
+        f"⚙️ Gating: Base3 (RSI+MACDl+MACDh) + Trend/Fib/PA امتیازی\n"
+        f"⚙️ همه ۴ نوع واگرایی همزمان بررسی میشوند\n"
         f"🔧 ETH=50x | LTC/DOGE=75x\n\n"
         f"📌 هشتگ‌های ثابت:\n{hashtag_list}\n\n"
         f"🕒 {format_iran_time()}"
