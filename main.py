@@ -1,8 +1,6 @@
 # -*- coding: utf-8 -*-
 """
 DTM Divergence Auto-Trading Bot - TheTrueTrade
-===============================================
-منطق تشخیص سیگنال: کاملاً عین dtm(1).py
 """
 
 import os
@@ -17,7 +15,6 @@ from datetime import datetime, timezone, timedelta
 from flask import Flask
 import pandas as pd
 import numpy as np
-from typing import Dict, Any, Optional, List, Tuple
 
 # =====================================================================================
 # تنظیمات logging
@@ -72,13 +69,6 @@ HASHTAGS = {
 # =====================================================================================
 # ثابت‌های استراتژی (مطابق کد اول)
 # =====================================================================================
-GRP_PIVOT = "Pivot"
-GRP_IND = "Indicators"
-GRP_TREND = "Trend"
-GRP_SCORE = "Min Confirmations"
-GRP_FIB = "Fibonacci"
-GRP_CANDLE = "Price Action"
-
 PIVOT_MODE = "سریع (5/3)"
 RSI_LEN = 14
 MACD_FAST = 12
@@ -469,131 +459,7 @@ def save_debug_log_to_file(symbol, debug_log_lines):
         logger.error(f"[DEBUG FILE] Error writing log: {e}")
 
 # =====================================================================================
-# ======================== بخش تشخیص سیگنال ==========================================
-# ======================== عین کد اول (dtm(1).py) ===================================
-# =====================================================================================
-
-# کتابخانه pynecore - عین کد اول
-from pynecore import pine_range
-from pynecore.lib import (
-    bar_index, barmerge, close, color, high, input, location, low, math, na,
-    open, plotshape, request, script, shape, size, strategy, syminfo, ta
-)
-from pynecore.types import Persistent, Series
-
-# =====================================================================================
-# کلاس وضعیت — برای جایگزینی Persistent در کد اول
-# =====================================================================================
-class SymbolState:
-    def __init__(self):
-        self.ph_price_2 = None
-        self.ph_price_1 = None
-        self.ph_bar_2 = None
-        self.ph_bar_1 = None
-        self.ph_rsi_2 = None
-        self.ph_rsi_1 = None
-        self.ph_macdline_2 = None
-        self.ph_macdline_1 = None
-        self.ph_hist_2 = None
-        self.ph_hist_1 = None
-        
-        self.pl_price_2 = None
-        self.pl_price_1 = None
-        self.pl_bar_2 = None
-        self.pl_bar_1 = None
-        self.pl_rsi_2 = None
-        self.pl_rsi_1 = None
-        self.pl_macdline_2 = None
-        self.pl_macdline_1 = None
-        self.pl_hist_2 = None
-        self.pl_hist_1 = None
-        
-        self.last_processed_ts = None
-        self.alert_sent = False
-
-    def to_dict(self):
-        return {
-            'ph_price_2': self.ph_price_2,
-            'ph_price_1': self.ph_price_1,
-            'ph_bar_2': self.ph_bar_2,
-            'ph_bar_1': self.ph_bar_1,
-            'ph_rsi_2': self.ph_rsi_2,
-            'ph_rsi_1': self.ph_rsi_1,
-            'ph_macdline_2': self.ph_macdline_2,
-            'ph_macdline_1': self.ph_macdline_1,
-            'ph_hist_2': self.ph_hist_2,
-            'ph_hist_1': self.ph_hist_1,
-            'pl_price_2': self.pl_price_2,
-            'pl_price_1': self.pl_price_1,
-            'pl_bar_2': self.pl_bar_2,
-            'pl_bar_1': self.pl_bar_1,
-            'pl_rsi_2': self.pl_rsi_2,
-            'pl_rsi_1': self.pl_rsi_1,
-            'pl_macdline_2': self.pl_macdline_2,
-            'pl_macdline_1': self.pl_macdline_1,
-            'pl_hist_2': self.pl_hist_2,
-            'pl_hist_1': self.pl_hist_1,
-            'last_processed_ts': str(self.last_processed_ts) if self.last_processed_ts else None,
-            'alert_sent': self.alert_sent
-        }
-
-    @classmethod
-    def from_dict(cls, data):
-        state = cls()
-        if data:
-            state.ph_price_2 = data.get('ph_price_2')
-            state.ph_price_1 = data.get('ph_price_1')
-            state.ph_bar_2 = data.get('ph_bar_2')
-            state.ph_bar_1 = data.get('ph_bar_1')
-            state.ph_rsi_2 = data.get('ph_rsi_2')
-            state.ph_rsi_1 = data.get('ph_rsi_1')
-            state.ph_macdline_2 = data.get('ph_macdline_2')
-            state.ph_macdline_1 = data.get('ph_macdline_1')
-            state.ph_hist_2 = data.get('ph_hist_2')
-            state.ph_hist_1 = data.get('ph_hist_1')
-            state.pl_price_2 = data.get('pl_price_2')
-            state.pl_price_1 = data.get('pl_price_1')
-            state.pl_bar_2 = data.get('pl_bar_2')
-            state.pl_bar_1 = data.get('pl_bar_1')
-            state.pl_rsi_2 = data.get('pl_rsi_2')
-            state.pl_rsi_1 = data.get('pl_rsi_1')
-            state.pl_macdline_2 = data.get('pl_macdline_2')
-            state.pl_macdline_1 = data.get('pl_macdline_1')
-            state.pl_hist_2 = data.get('pl_hist_2')
-            state.pl_hist_1 = data.get('pl_hist_1')
-            state.last_processed_ts = pd.Timestamp(data['last_processed_ts']) if data.get('last_processed_ts') else None
-            state.alert_sent = data.get('alert_sent', False)
-        return state
-
-SYMBOLS = ["LTCUSDT", "DOGEUSDT", "ETHUSDT"]
-SYMBOL_STATES = {s: SymbolState() for s in SYMBOLS}
-SIGNAL_COUNTER = 0
-
-def save_states():
-    data = {s: SYMBOL_STATES[s].to_dict() for s in SYMBOLS}
-    try:
-        with open(STATE_FILE, 'w') as f:
-            json.dump(data, f, indent=2)
-    except Exception as e:
-        logger.error(f"[STATE] Error saving states: {e}")
-
-def load_states():
-    global SYMBOL_STATES
-    if os.path.exists(STATE_FILE):
-        try:
-            with open(STATE_FILE, 'r') as f:
-                data = json.load(f)
-            for s in SYMBOLS:
-                if s in data:
-                    SYMBOL_STATES[s] = SymbolState.from_dict(data[s])
-            logger.info(f"[STATE] Loaded states from {STATE_FILE}")
-        except Exception as e:
-            logger.error(f"[STATE] Error loading states: {e}")
-    else:
-        logger.info(f"[STATE] No state file found, starting fresh")
-
-# =====================================================================================
-# تابع پیاده‌سازی محاسبات Pine در پایتون (برای داده‌های واقعی)
+# ======================== توابع محاسباتی ===========================================
 # =====================================================================================
 
 def calc_rma(series, length):
@@ -893,7 +759,118 @@ def check_price_action(df, confirm_bar, direction, atr_val):
     return pa, pa_reasons
 
 # =====================================================================================
-# تابع تشخیص سیگنال — عین کد اول (با تطبیق داده‌های واقعی)
+# کلاس وضعیت
+# =====================================================================================
+class SymbolState:
+    def __init__(self):
+        self.ph_price_2 = None
+        self.ph_price_1 = None
+        self.ph_bar_2 = None
+        self.ph_bar_1 = None
+        self.ph_rsi_2 = None
+        self.ph_rsi_1 = None
+        self.ph_macdline_2 = None
+        self.ph_macdline_1 = None
+        self.ph_hist_2 = None
+        self.ph_hist_1 = None
+        
+        self.pl_price_2 = None
+        self.pl_price_1 = None
+        self.pl_bar_2 = None
+        self.pl_bar_1 = None
+        self.pl_rsi_2 = None
+        self.pl_rsi_1 = None
+        self.pl_macdline_2 = None
+        self.pl_macdline_1 = None
+        self.pl_hist_2 = None
+        self.pl_hist_1 = None
+        
+        self.last_processed_ts = None
+        self.alert_sent = False
+
+    def to_dict(self):
+        return {
+            'ph_price_2': self.ph_price_2,
+            'ph_price_1': self.ph_price_1,
+            'ph_bar_2': self.ph_bar_2,
+            'ph_bar_1': self.ph_bar_1,
+            'ph_rsi_2': self.ph_rsi_2,
+            'ph_rsi_1': self.ph_rsi_1,
+            'ph_macdline_2': self.ph_macdline_2,
+            'ph_macdline_1': self.ph_macdline_1,
+            'ph_hist_2': self.ph_hist_2,
+            'ph_hist_1': self.ph_hist_1,
+            'pl_price_2': self.pl_price_2,
+            'pl_price_1': self.pl_price_1,
+            'pl_bar_2': self.pl_bar_2,
+            'pl_bar_1': self.pl_bar_1,
+            'pl_rsi_2': self.pl_rsi_2,
+            'pl_rsi_1': self.pl_rsi_1,
+            'pl_macdline_2': self.pl_macdline_2,
+            'pl_macdline_1': self.pl_macdline_1,
+            'pl_hist_2': self.pl_hist_2,
+            'pl_hist_1': self.pl_hist_1,
+            'last_processed_ts': str(self.last_processed_ts) if self.last_processed_ts else None,
+            'alert_sent': self.alert_sent
+        }
+
+    @classmethod
+    def from_dict(cls, data):
+        state = cls()
+        if data:
+            state.ph_price_2 = data.get('ph_price_2')
+            state.ph_price_1 = data.get('ph_price_1')
+            state.ph_bar_2 = data.get('ph_bar_2')
+            state.ph_bar_1 = data.get('ph_bar_1')
+            state.ph_rsi_2 = data.get('ph_rsi_2')
+            state.ph_rsi_1 = data.get('ph_rsi_1')
+            state.ph_macdline_2 = data.get('ph_macdline_2')
+            state.ph_macdline_1 = data.get('ph_macdline_1')
+            state.ph_hist_2 = data.get('ph_hist_2')
+            state.ph_hist_1 = data.get('ph_hist_1')
+            state.pl_price_2 = data.get('pl_price_2')
+            state.pl_price_1 = data.get('pl_price_1')
+            state.pl_bar_2 = data.get('pl_bar_2')
+            state.pl_bar_1 = data.get('pl_bar_1')
+            state.pl_rsi_2 = data.get('pl_rsi_2')
+            state.pl_rsi_1 = data.get('pl_rsi_1')
+            state.pl_macdline_2 = data.get('pl_macdline_2')
+            state.pl_macdline_1 = data.get('pl_macdline_1')
+            state.pl_hist_2 = data.get('pl_hist_2')
+            state.pl_hist_1 = data.get('pl_hist_1')
+            state.last_processed_ts = pd.Timestamp(data['last_processed_ts']) if data.get('last_processed_ts') else None
+            state.alert_sent = data.get('alert_sent', False)
+        return state
+
+SYMBOLS = ["LTCUSDT", "DOGEUSDT", "ETHUSDT"]
+SYMBOL_STATES = {s: SymbolState() for s in SYMBOLS}
+SIGNAL_COUNTER = 0
+
+def save_states():
+    data = {s: SYMBOL_STATES[s].to_dict() for s in SYMBOLS}
+    try:
+        with open(STATE_FILE, 'w') as f:
+            json.dump(data, f, indent=2)
+    except Exception as e:
+        logger.error(f"[STATE] Error saving states: {e}")
+
+def load_states():
+    global SYMBOL_STATES
+    if os.path.exists(STATE_FILE):
+        try:
+            with open(STATE_FILE, 'r') as f:
+                data = json.load(f)
+            for s in SYMBOLS:
+                if s in data:
+                    SYMBOL_STATES[s] = SymbolState.from_dict(data[s])
+            logger.info(f"[STATE] Loaded states from {STATE_FILE}")
+        except Exception as e:
+            logger.error(f"[STATE] Error loading states: {e}")
+    else:
+        logger.info(f"[STATE] No state file found, starting fresh")
+
+# =====================================================================================
+# تابع تشخیص سیگنال
 # =====================================================================================
 
 def detect_signal(df, state, symbol):
@@ -930,9 +907,6 @@ def detect_signal(df, state, symbol):
         log(f"❌ داده ناکافی: {n}")
         return None, None, None, None, False, None, None, 0, [], None, None
     
-    # ============================================================
-    # محاسبه اندیکاتورها — مطابق کد اول
-    # ============================================================
     close_series = closed_df_reset["close"]
     high_series = closed_df_reset["high"]
     low_series = closed_df_reset["low"]
@@ -941,20 +915,11 @@ def detect_signal(df, state, symbol):
     macd_line, signal_line, hist_line = calc_macd(close_series, MACD_FAST, MACD_SLOW, MACD_SIG)
     atr14 = calc_atr(high_series, low_series, close_series, 14)
     
-    # ============================================================
-    # تشخیص پیوت‌ها — مطابق کد اول
-    # ============================================================
     pivot_high = find_pivot_high(high_series, LEFT_BARS, RIGHT_BARS)
     pivot_low = find_pivot_low(low_series, LEFT_BARS, RIGHT_BARS)
     
     last_confirmed = n - 1 - RIGHT_BARS
-    current_bar_index = n - 1
     
-    log(f"   n={n}, last_confirmed={last_confirmed}")
-    
-    # ============================================================
-    # مقداردهی اولیه — مطابق با متغیرهای Persistent در کد اول
-    # ============================================================
     ph_price_2 = state.ph_price_2
     ph_price_1 = state.ph_price_1
     ph_bar_2 = state.ph_bar_2
@@ -980,9 +945,6 @@ def detect_signal(df, state, symbol):
     new_pivot_high = False
     new_pivot_low = False
     
-    # ============================================================
-    # به‌روزرسانی پیوت‌ها — مطابق با کد اول
-    # ============================================================
     if not pd.isna(pivot_high.iloc[last_confirmed]):
         ph_price_1 = ph_price_2
         ph_bar_1 = ph_bar_2
@@ -1042,11 +1004,8 @@ def detect_signal(df, state, symbol):
     state.last_processed_ts = closed_df.index[last_confirmed]
     early_signal = new_pivot_high or new_pivot_low
     
+    log(f"   n={n}, last_confirmed={last_confirmed}")
     log(f"   new_high={1 if new_pivot_high else 0}, new_low={1 if new_pivot_low else 0} | mem: H={len([x for x in [ph_price_2, ph_price_1] if x is not None])} L={len([x for x in [pl_price_2, pl_price_1] if x is not None])}")
-    
-    # ============================================================
-    # تشخیص واگرایی — عین کد اول
-    # ============================================================
     
     best_signal = None
     best_entry = None
@@ -1059,9 +1018,7 @@ def detect_signal(df, state, symbol):
     best_pivot1 = None
     best_pivot2 = None
     
-    # ============================================================
-    # 1. Classic Bearish — عین کد اول
-    # ============================================================
+    # Classic Bearish
     if new_pivot_high and ph_bar_1 is not None:
         price_higher_high = ph_price_2 > ph_price_1
         rsi_lower_high = ph_rsi_2 < ph_rsi_1
@@ -1126,9 +1083,7 @@ def detect_signal(df, state, symbol):
             log(f"      {'✅' if trend_ok else '❌'} Trend (trendOkForBearish)")
             log(f"      ❌ Base3 برقرار نیست")
     
-    # ============================================================
-    # 2. Classic Bullish — عین کد اول
-    # ============================================================
+    # Classic Bullish
     if new_pivot_low and pl_bar_1 is not None:
         price_lower_low = pl_price_2 < pl_price_1
         rsi_higher_low = pl_rsi_2 > pl_rsi_1
@@ -1193,9 +1148,7 @@ def detect_signal(df, state, symbol):
             log(f"      {'✅' if trend_ok else '❌'} Trend (trendOkForBullish)")
             log(f"      ❌ Base3 برقرار نیست")
     
-    # ============================================================
-    # 3. Hidden Bullish — عین کد اول
-    # ============================================================
+    # Hidden Bullish
     if new_pivot_low and pl_bar_1 is not None and ENABLE_HIDDEN:
         price_higher_low = pl_price_2 > pl_price_1
         rsi_lower_low = pl_rsi_2 < pl_rsi_1
@@ -1259,9 +1212,7 @@ def detect_signal(df, state, symbol):
             log(f"      {'✅' if hist_lower_low and both_troughs_red and macd_color_low else '❌'} MACD Histogram")
             log(f"      ❌ Base3 برقرار نیست")
     
-    # ============================================================
-    # 4. Hidden Bearish — عین کد اول
-    # ============================================================
+    # Hidden Bearish
     if new_pivot_high and ph_bar_1 is not None and ENABLE_HIDDEN:
         price_lower_high = ph_price_2 < ph_price_1
         rsi_higher_high = ph_rsi_2 > ph_rsi_1
@@ -1325,9 +1276,6 @@ def detect_signal(df, state, symbol):
             log(f"      {'✅' if hist_higher_high and both_peaks_green and macd_color_high else '❌'} MACD Histogram")
             log(f"      ❌ Base3 برقرار نیست")
     
-    # ============================================================
-    # لاگ نهایی و ذخیره
-    # ============================================================
     save_states()
     
     if best_signal is None:
