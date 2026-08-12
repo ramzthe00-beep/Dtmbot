@@ -11,18 +11,18 @@ DTM Divergence Auto-Trading Bot - TheTrueTrade (نسخه هیبریدی)
 - رفع درز State پیوت‌ها (start_bar=0 همیشه)
 - RSI/MACD در همان کندل Pivot
 - شرط روند: تفاضل مقدار برازش دو رگرسیون (مثل ta.linreg) با >
-- کندل تأییدیه: روی کندل تأیید (bar2 + RIGHT_BARS)
+- کندل تأکیدیه: روی کندل تأکید (bar2 + RIGHT_BARS)
 - رفع Off-by-one در mid_peak/mid_trough
 - رفع فرمول avg_body در Price Action
 - **FIXED**: شرط روند با > (مطابق Pine)
 - **FIXED**: MACD Color Change برگردانده شد (مطابق Pine)
 - **FIXED**: تشخیص نوع واگرایی (Classic/Hidden)
-- **FIXED**: ATR در کندل تأیید
+- **FIXED**: ATR در کندل تأکید
 - **FIXED**: فقط ۲ پیوت آخر بررسی میشن (مثل Pine)
 - **FIXED [PINE-EXACT GATE]**: ۴ شرط اجباری (RSI + MACD Line + MACD Hist + Trend)
 - رفع فرمول فیبوناچی
 - **FIXED [BUG B]**: FIB_SEARCH_BARS = 100 (مطابق Pine)
-- **FIXED [ENHANCEMENT C]**: ATR در بار تأیید (confirm bar) خوانده میشه
+- **FIXED [ENHANCEMENT C]**: ATR در بار تأکید (confirm bar) خوانده میشه
 - **FIXED [ENHANCEMENT D]**: Bar-State Safety Net (حذف کندل باز)
 - **FIXED [RIGOR]**: calc_rma با تطبیق دقیق معناشناسی na در Pine
 - State persistence — پیوت‌ها در فایل ذخیره میشن
@@ -42,9 +42,10 @@ DTM Divergence Auto-Trading Bot - TheTrueTrade (نسخه هیبریدی)
 - **DEBUG**: Full Debug Log (فایل `full_debug_log.txt`)
 - **FIXED [v2.0]**: Base3 = RSI+MACDl+MACDh (روند امتیازی شد)
 - **FIXED [v2.0]**: MACD Color Change با منطق sign-based
-- **FIXED [v2.0]**: فیبوناچی از کندل تأیید جستجو میکند
+- **FIXED [v2.0]**: فیبوناچی از کندل تأکید جستجو میکند
 - **FIXED [v2.0]**: همه ۴ نوع واگرایی همزمان بررسی میشوند
 - **FIXED [v2.0]**: جلوگیری از تقسیم بر صفر در Price Action
+- **FIXED [v3.0]**: لاگ‌گیری کامل Pine-Exact برای مقایسه
 """
 
 import os
@@ -60,6 +61,7 @@ from datetime import datetime, timezone, timedelta
 from flask import Flask
 import json
 import logging
+from typing import Dict, Any, Optional, List, Tuple
 
 # =====================================================================================
 # تنظیمات logging
@@ -1226,7 +1228,305 @@ def save_debug_log_to_file(symbol, debug_log_lines):
         logger.error(f"[DEBUG FILE] Error writing log: {e}")
 
 # =====================================================================================
-# تابع تشخیص سیگنال — همه ۴ نوع واگرایی همزمان بررسی میشوند
+# 🔥 تابع لاگ‌گیری کامل Pine-Exact برای مقایسه
+# =====================================================================================
+def generate_pine_exact_debug_log(symbol, signal_type, div_type, score, details, 
+                                   p1, p2, bar1, bar2, entry_price, stop, target,
+                                   df_indexed, rsi_vals, macd_line_vals, hist_vals, atr_vals,
+                                   close, high, low):
+    """
+    تولید لاگ کامل با تمام پارامترهای Pine-Exact برای مقایسه
+    """
+    log_lines = []
+    
+    # Header
+    log_lines.append("═══════════════════════════════════════════════════")
+    log_lines.append(f"🔍 Pine-Exact Debug Log — {symbol}")
+    log_lines.append("═══════════════════════════════════════════════════")
+    log_lines.append(f"🕒 زمان: {format_iran_time()}")
+    log_lines.append("")
+    
+    # ============================================================
+    # 1. Data & Candle Alignment
+    # ============================================================
+    log_lines.append("📊 1. DATA & CANDLE ALIGNMENT:")
+    log_lines.append("─────────────────────────────────────────────────")
+    log_lines.append(f"   • Total Candles (n): {len(df_indexed)}")
+    log_lines.append(f"   • Current Bar Index: {len(df_indexed) - 1}")
+    log_lines.append(f"   • LEFT_BARS: {LEFT_BARS}")
+    log_lines.append(f"   • RIGHT_BARS: {RIGHT_BARS}")
+    log_lines.append(f"   • Last Confirmed Bar: {len(df_indexed) - 1 - RIGHT_BARS}")
+    log_lines.append("")
+    log_lines.append(f"   📍 Pivot 1 (Old):")
+    log_lines.append(f"      • Bar: {bar1}")
+    log_lines.append(f"      • Price: {p1['price']:.6f}")
+    log_lines.append(f"      • Timestamp: {p1['ts']}")
+    log_lines.append("")
+    log_lines.append(f"   📍 Pivot 2 (New):")
+    log_lines.append(f"      • Bar: {bar2}")
+    log_lines.append(f"      • Price: {p2['price']:.6f}")
+    log_lines.append(f"      • Timestamp: {p2['ts']}")
+    log_lines.append("")
+    log_lines.append(f"   📏 Distance Between Pivots: {bar2 - bar1} bars")
+    log_lines.append(f"   • Min Distance Required: {LEFT_BARS + 1} (LEFT_BARS+1)")
+    log_lines.append("")
+    
+    # ============================================================
+    # 2. NA / NaN and Initialization
+    # ============================================================
+    log_lines.append("🔢 2. NA / NaN AND INITIALIZATION:")
+    log_lines.append("─────────────────────────────────────────────────")
+    log_lines.append(f"   • P1 Price is NA: {pd.isna(p1['price'])}")
+    log_lines.append(f"   • P2 Price is NA: {pd.isna(p2['price'])}")
+    log_lines.append(f"   • P1 RSI is NA: {pd.isna(p1['rsi'])}")
+    log_lines.append(f"   • P2 RSI is NA: {pd.isna(p2['rsi'])}")
+    log_lines.append(f"   • P1 MACD is NA: {pd.isna(p1['macdline'])}")
+    log_lines.append(f"   • P2 MACD is NA: {pd.isna(p2['macdline'])}")
+    log_lines.append(f"   • P1 Hist is NA: {pd.isna(p1['hist'])}")
+    log_lines.append(f"   • P2 Hist is NA: {pd.isna(p2['hist'])}")
+    log_lines.append("")
+    
+    # ============================================================
+    # 3. RMA / RSI Calculation
+    # ============================================================
+    log_lines.append("📈 3. RMA / RSI CALCULATION:")
+    log_lines.append("─────────────────────────────────────────────────")
+    log_lines.append(f"   • RSI Length: 14")
+    log_lines.append(f"   • P1 RSI: {p1['rsi']:.2f}")
+    log_lines.append(f"   • P2 RSI: {p2['rsi']:.2f}")
+    log_lines.append(f"   • RSI Diff: {p2['rsi'] - p1['rsi']:+.2f}")
+    log_lines.append(f"   • Current RSI[-1]: {rsi_vals.iloc[-1]:.2f}")
+    
+    # RMA Calculation Details
+    if not pd.isna(p1['rsi']) and not pd.isna(p2['rsi']):
+        rsi_ok = (p2['price'] < p1['price'] and p2['rsi'] > p1['rsi']) or \
+                 (p2['price'] > p1['price'] and p2['rsi'] < p1['rsi'])
+        log_lines.append(f"   • RSI Condition: {'✅ PASS' if rsi_ok else '❌ FAIL'}")
+    log_lines.append("")
+    
+    # ============================================================
+    # 4. EMA Calculation (MACD)
+    # ============================================================
+    log_lines.append("📊 4. EMA CALCULATION (MACD):")
+    log_lines.append("─────────────────────────────────────────────────")
+    log_lines.append(f"   • MACD Fast: 12 | Slow: 26 | Signal: 9")
+    log_lines.append(f"   • P1 MACD Line: {p1['macdline']:.6f}")
+    log_lines.append(f"   • P2 MACD Line: {p2['macdline']:.6f}")
+    log_lines.append(f"   • MACD Diff: {p2['macdline'] - p1['macdline']:+.6f}")
+    log_lines.append(f"   • P1 Histogram: {p1['hist']:.6f}")
+    log_lines.append(f"   • P2 Histogram: {p2['hist']:.6f}")
+    log_lines.append(f"   • Hist Diff: {p2['hist'] - p1['hist']:+.6f}")
+    log_lines.append(f"   • Current MACD Line[-1]: {macd_line_vals.iloc[-1]:.6f}")
+    log_lines.append(f"   • Current Histogram[-1]: {hist_vals.iloc[-1]:.6f}")
+    log_lines.append("")
+    
+    # ============================================================
+    # 5. ATR and True Range
+    # ============================================================
+    log_lines.append("📉 5. ATR AND TRUE RANGE:")
+    log_lines.append("─────────────────────────────────────────────────")
+    log_lines.append(f"   • ATR Length: 14")
+    log_lines.append(f"   • ATR at Confirm Bar ({bar2 + RIGHT_BARS}): {atr_vals.iloc[min(bar2 + RIGHT_BARS, len(atr_vals)-1)]:.6f}")
+    log_lines.append(f"   • Current ATR[-1]: {atr_vals.iloc[-1]:.6f}")
+    log_lines.append("")
+    
+    # ============================================================
+    # 6. History References [1]
+    # ============================================================
+    log_lines.append("📜 6. HISTORY REFERENCES ([1]):")
+    log_lines.append("─────────────────────────────────────────────────")
+    if bar1 > 0:
+        log_lines.append(f"   • Price[1] at P1: {close.iloc[bar1-1]:.6f}")
+    else:
+        log_lines.append("   • Price[1] at P1: NA (first bar)")
+    if bar2 > 0:
+        log_lines.append(f"   • Price[1] at P2: {close.iloc[bar2-1]:.6f}")
+    else:
+        log_lines.append("   • Price[1] at P2: NA (first bar)")
+    log_lines.append("")
+    
+    # ============================================================
+    # 7. Fibonacci Swing Detection
+    # ============================================================
+    log_lines.append("📐 7. FIBONACCI SWING DETECTION:")
+    log_lines.append("─────────────────────────────────────────────────")
+    fib_start = find_trend_start_high(high, bar1) if signal_type == "BUY" else find_trend_start_low(low, bar1)
+    log_lines.append(f"   • FIB_SEARCH_BARS: {FIB_SEARCH_BARS}")
+    log_lines.append(f"   • Fib Start: {fib_start:.6f}" if fib_start is not None else "   • Fib Start: None")
+    log_lines.append(f"   • Fib End (P1 Price): {p1['price']:.6f}")
+    log_lines.append(f"   • Target (P2 Price): {p2['price']:.6f}")
+    range_ = fib_start - p1['price'] if fib_start is not None else 0
+    log_lines.append(f"   • Fib Range: {range_:.6f}")
+    if fib_start is not None:
+        level618 = p1['price'] - range_ * 0.618 if signal_type == "BUY" else p1['price'] + abs(range_) * 0.618
+        level786 = p1['price'] - range_ * 0.786 if signal_type == "BUY" else p1['price'] + abs(range_) * 0.786
+        log_lines.append(f"   • Level 0.618: {level618:.6f}")
+        log_lines.append(f"   • Level 0.786: {level786:.6f}")
+        log_lines.append(f"   • Tolerance: {abs(range_) * (FIB_TOLERANCE_PCT / 100.0):.6f}")
+        fib_ok = check_fib_level(fib_start, p1['price'], p2['price'], signal_type != "BUY")
+        log_lines.append(f"   • Fibonacci Condition: {'✅ PASS' if fib_ok else '❌ FAIL'}")
+    log_lines.append("")
+    
+    # ============================================================
+    # 8. Price Action Conditions
+    # ============================================================
+    log_lines.append("🕯️ 8. PRICE ACTION CONDITIONS:")
+    log_lines.append("─────────────────────────────────────────────────")
+    confirm_bar = bar2 + RIGHT_BARS
+    if confirm_bar < len(df_indexed):
+        last_candle = df_indexed.iloc[confirm_bar]
+        candle_range = last_candle['high'] - last_candle['low']
+        candle_body = abs(last_candle['close'] - last_candle['open'])
+        upper_shadow = last_candle['high'] - max(last_candle['close'], last_candle['open'])
+        lower_shadow = min(last_candle['close'], last_candle['open']) - last_candle['low']
+        log_lines.append(f"   • Confirm Bar: {confirm_bar}")
+        log_lines.append(f"   • Candle Range: {candle_range:.6f}")
+        log_lines.append(f"   • Candle Body: {candle_body:.6f}")
+        log_lines.append(f"   • Upper Shadow: {upper_shadow:.6f}")
+        log_lines.append(f"   • Lower Shadow: {lower_shadow:.6f}")
+        log_lines.append(f"   • Shadow/Body Ratio: {lower_shadow / candle_body if candle_body > 0 else 0:.2f}")
+        log_lines.append(f"   • Size OK (>= {MIN_CANDLE_ATR_RATIO}x ATR): {'✅' if candle_range >= MIN_CANDLE_ATR_RATIO * atr_vals.iloc[confirm_bar] else '❌'}")
+        pa_ok, pa_reasons = check_price_action(df_indexed, confirm_bar, signal_type, atr_vals.iloc[confirm_bar])
+        log_lines.append(f"   • Price Action: {'✅ PASS' if pa_ok else '❌ FAIL'} ({', '.join(pa_reasons) if pa_reasons else 'None'})")
+    else:
+        log_lines.append(f"   • Confirm Bar: {confirm_bar} (Out of range)")
+        log_lines.append("   • Price Action: ❌ FAIL (No confirm bar)")
+    log_lines.append("")
+    
+    # ============================================================
+    # 9. Trend Regression
+    # ============================================================
+    log_lines.append("📈 9. TREND REGRESSION (ta.linreg):")
+    log_lines.append("─────────────────────────────────────────────────")
+    log_lines.append(f"   • TREND_LOOKBACK: {TREND_LOOKBACK}")
+    log_lines.append(f"   • TREND_SLOPE_MIN_PCT: {TREND_SLOPE_MIN_PCT}%")
+    
+    if bar1 is not None:
+        y_current = close.iloc[bar1 - TREND_LOOKBACK + 1:bar1 + 1].values if bar1 - TREND_LOOKBACK + 1 >= 0 else None
+        y_past = close.iloc[bar1 - 2 * TREND_LOOKBACK + 1:bar1 - TREND_LOOKBACK + 1].values if bar1 - 2 * TREND_LOOKBACK + 1 >= 0 else None
+        
+        if y_current is not None and len(y_current) >= 2 and y_past is not None and len(y_past) >= 2:
+            fitted_end_current = _linreg_end(y_current)
+            fitted_end_past = _linreg_end(y_past)
+            total_slope = fitted_end_current - fitted_end_past
+            avg = y_current.mean()
+            slope_pct = (total_slope / avg) * 100 if avg != 0 else 0
+            log_lines.append(f"   • Slope: {slope_pct:.4f}%")
+            log_lines.append(f"   • Slope >= {TREND_SLOPE_MIN_PCT}%: {'✅' if abs(slope_pct) >= TREND_SLOPE_MIN_PCT else '❌'}")
+            
+            if signal_type == "BUY":
+                trend_ok = slope_pct < -TREND_SLOPE_MIN_PCT if div_type == 'classic' else slope_pct > TREND_SLOPE_MIN_PCT
+            else:
+                trend_ok = slope_pct > TREND_SLOPE_MIN_PCT if div_type == 'classic' else slope_pct < -TREND_SLOPE_MIN_PCT
+            log_lines.append(f"   • Trend Condition: {'✅ PASS' if trend_ok else '❌ FAIL'}")
+        else:
+            log_lines.append("   • Trend: ❌ FAIL (Insufficient data)")
+    else:
+        log_lines.append("   • Trend: ❌ FAIL (No ref bar)")
+    log_lines.append("")
+    
+    # ============================================================
+    # 10. Crossover / Crossunder & Floating-Point
+    # ============================================================
+    log_lines.append("🔄 10. CROSSOVER / CROSSUNDER & FLOATING-POINT:")
+    log_lines.append("─────────────────────────────────────────────────")
+    if bar1 is not None and bar2 is not None and bar2 > bar1 and bar1 + 1 < len(hist_vals) and bar2 < len(hist_vals):
+        # Check for crossovers between pivots
+        crossed = False
+        cross_type = None
+        for i in range(bar1 + 1, bar2 + 1):
+            if i < len(hist_vals) and i > 0:
+                prev = hist_vals.iloc[i-1]
+                curr = hist_vals.iloc[i]
+                if prev < 0 and curr > 0:
+                    crossed = True
+                    cross_type = "CROSSOVER (Negative → Positive)"
+                    break
+                elif prev > 0 and curr < 0:
+                    crossed = True
+                    cross_type = "CROSSUNDER (Positive → Negative)"
+                    break
+        log_lines.append(f"   • Color Change between Pivots: {'✅ YES' if crossed else '❌ NO'}")
+        if crossed:
+            log_lines.append(f"   • Change Type: {cross_type}")
+        
+        # MACD Line crossover check
+        macd_crossed = False
+        macd_cross_type = None
+        for i in range(bar1 + 1, bar2 + 1):
+            if i < len(macd_line_vals) and i > 0:
+                prev_signal = signal_line.iloc[i-1] if i-1 < len(signal_line) else None
+                curr_signal = signal_line.iloc[i] if i < len(signal_line) else None
+                if prev_signal is not None and curr_signal is not None:
+                    prev_macd = macd_line_vals.iloc[i-1]
+                    curr_macd = macd_line_vals.iloc[i]
+                    if prev_macd < prev_signal and curr_macd > curr_signal:
+                        macd_crossed = True
+                        macd_cross_type = "MACD CROSSOVER (Signal Line)"
+                        break
+                    elif prev_macd > prev_signal and curr_macd < curr_signal:
+                        macd_crossed = True
+                        macd_cross_type = "MACD CROSSUNDER (Signal Line)"
+                        break
+        log_lines.append(f"   • MACD Signal Line Cross: {'✅ YES' if macd_crossed else '❌ NO'}")
+        if macd_crossed:
+            log_lines.append(f"   • Cross Type: {macd_cross_type}")
+    log_lines.append("")
+    
+    # ============================================================
+    # 11. State Persistence
+    # ============================================================
+    log_lines.append("💾 11. STATE PERSISTENCE:")
+    log_lines.append("─────────────────────────────────────────────────")
+    log_lines.append(f"   • Total Pivot Highs in Memory: {len(SYMBOL_STATES[symbol].pivot_highs)}")
+    log_lines.append(f"   • Total Pivot Lows in Memory: {len(SYMBOL_STATES[symbol].pivot_lows)}")
+    log_lines.append(f"   • Last Processed TS: {SYMBOL_STATES[symbol].last_processed_ts}")
+    log_lines.append(f"   • Alert Sent: {SYMBOL_STATES[symbol].alert_sent}")
+    log_lines.append("")
+    
+    # ============================================================
+    # 12. Realtime / Bar-Close Behavior
+    # ============================================================
+    log_lines.append("⏱️ 12. REALTIME / BAR-CLOSE BEHAVIOR:")
+    log_lines.append("─────────────────────────────────────────────────")
+    log_lines.append(f"   • API Returns Open Candle: {API_RETURNS_OPEN_CANDLE}")
+    log_lines.append(f"   • History Bars: {HISTORY_BARS}")
+    log_lines.append(f"   • Last Confirmed Bar: {len(df_indexed) - 1 - RIGHT_BARS}")
+    log_lines.append(f"   • Entry Price (Close[-1]): {entry_price:.6f}")
+    log_lines.append(f"   • Stop Loss: {stop:.6f}" if stop is not None else "   • Stop Loss: None")
+    log_lines.append(f"   • Take Profit: {target:.6f}" if target is not None else "   • Take Profit: None")
+    log_lines.append("")
+    
+    # ============================================================
+    # Final Result
+    # ============================================================
+    log_lines.append("🏁 FINAL RESULT:")
+    log_lines.append("─────────────────────────────────────────────────")
+    if signal_type and stop and target:
+        emoji, label = classify_signal(score)
+        log_lines.append(f"   ✅ SIGNAL: {signal_type} {div_type}")
+        log_lines.append(f"   • Score: {score}/6")
+        log_lines.append(f"   • Type: {label}")
+        log_lines.append(f"   • Entry: {entry_price:.6f}")
+        log_lines.append(f"   • SL: {stop:.6f}")
+        log_lines.append(f"   • TP: {target:.6f}")
+    else:
+        log_lines.append("   ❌ NO SIGNAL")
+    log_lines.append("")
+    
+    # Conditions Details
+    log_lines.append("📋 CONDITIONS CHECK:")
+    log_lines.append("─────────────────────────────────────────────────")
+    for detail in details:
+        log_lines.append(f"   {detail}")
+    
+    log_lines.append("")
+    log_lines.append("═══════════════════════════════════════════════════")
+    
+    return "\n".join(log_lines)
+
+# =====================================================================================
+# تابع تشخیص سیگنال — همه ۴ نوع واگرایی همزمان بررسی میشوند با لاگ کامل
 # =====================================================================================
 def detect_signal(df, state, symbol, debug=False):
     debug_log = []
@@ -1272,10 +1572,8 @@ def detect_signal(df, state, symbol, debug=False):
     pivot_high = find_pivot_high(high, LEFT_BARS, RIGHT_BARS)
     pivot_low = find_pivot_low(low, LEFT_BARS, RIGHT_BARS)
 
-    # فقط کندل‌های بسته شده (تا RIGHT_BARS قبل از آخر)
     last_confirmed = n - 1 - RIGHT_BARS
 
-    # جمع‌آوری پیوت‌های جدید
     existing_high_ts = {p['ts'] for p in state.pivot_highs}
     existing_low_ts = {p['ts'] for p in state.pivot_lows}
 
@@ -1285,7 +1583,6 @@ def detect_signal(df, state, symbol, debug=False):
     for i in range(LEFT_BARS, last_confirmed + 1):
         ts = closed_df_indexed.index[i]
         if not pd.isna(pivot_high.iloc[i]) and ts not in existing_high_ts:
-            # مقدار pivot روی بار تأیید (i) هست، کندل واقعی پیوت i - RIGHT_BARS
             real_bar = i - RIGHT_BARS
             new_pivots_high.append({
                 'ts': ts, 'price': float(pivot_high.iloc[i]),
@@ -1321,7 +1618,6 @@ def detect_signal(df, state, symbol, debug=False):
     early_signal = len(new_pivots_high) > 0 or len(new_pivots_low) > 0
     entry_price = float(close.iloc[-1])
 
-    # لیست همه سیگنال‌های ممکن (همه ۴ نوع واگرایی همزمان بررسی میشوند)
     signals = []
     
     # ================================================================
@@ -1334,21 +1630,15 @@ def detect_signal(df, state, symbol, debug=False):
         bar2 = resolve_bar_from_ts(closed_df_indexed, pl_2['ts'])
 
         if bar1 is not None and bar2 is not None and bar2 > bar1:
-            # Classic Bullish: Lower Low قیمت + Higher Low RSI
             is_classic_bull = pl_2['price'] < pl_1['price'] and pl_2['rsi'] > pl_1['rsi']
-            # Hidden Bullish: Higher Low قیمت + Lower Low RSI
             is_hidden_bull = pl_2['price'] > pl_1['price'] and pl_2['rsi'] < pl_1['rsi']
             
             if is_classic_bull:
-                log(f"   🔵 CD+ check | PL1={pl_1['price']:.4f} (RSI={pl_1['rsi']:.2f}) → PL2={pl_2['price']:.4f} (RSI={pl_2['rsi']:.2f})")
                 score, details = calculate_divergence_score(
                     pl_1, pl_2, 'classic', 'BUY', bar1, bar2,
                     hist_line, high, low, closed_df_indexed, atr14, close
                 )
-                log(f"   🔵 CD+ score={score}/6")
-                for d in details:
-                    log(f"      {d}")
-                if score >= 3:  # حداقل Base3
+                if score >= 3:
                     signals.append({
                         'type': 'BUY', 'div_type': 'classic', 'score': score,
                         'details': details, 'p1': pl_1, 'p2': pl_2,
@@ -1356,14 +1646,10 @@ def detect_signal(df, state, symbol, debug=False):
                     })
             
             if is_hidden_bull:
-                log(f"   🔵 HD+ check | PL1={pl_1['price']:.4f} (RSI={pl_1['rsi']:.2f}) → PL2={pl_2['price']:.4f} (RSI={pl_2['rsi']:.2f})")
                 score, details = calculate_divergence_score(
                     pl_1, pl_2, 'hidden', 'BUY', bar1, bar2,
                     hist_line, high, low, closed_df_indexed, atr14, close
                 )
-                log(f"   🔵 HD+ score={score}/6")
-                for d in details:
-                    log(f"      {d}")
                 if score >= 3:
                     signals.append({
                         'type': 'BUY', 'div_type': 'hidden', 'score': score,
@@ -1381,21 +1667,15 @@ def detect_signal(df, state, symbol, debug=False):
         bar2 = resolve_bar_from_ts(closed_df_indexed, ph_2['ts'])
 
         if bar1 is not None and bar2 is not None and bar2 > bar1:
-            # Classic Bearish: Higher High قیمت + Lower High RSI
             is_classic_bear = ph_2['price'] > ph_1['price'] and ph_2['rsi'] < ph_1['rsi']
-            # Hidden Bearish: Lower High قیمت + Higher High RSI
             is_hidden_bear = ph_2['price'] < ph_1['price'] and ph_2['rsi'] > ph_1['rsi']
             
             if is_classic_bear:
-                log(f"   🔴 CD- check | PH1={ph_1['price']:.4f} (RSI={ph_1['rsi']:.2f}) → PH2={ph_2['price']:.4f} (RSI={ph_2['rsi']:.2f})")
                 score, details = calculate_divergence_score(
                     ph_1, ph_2, 'classic', 'SELL', bar1, bar2,
                     hist_line, high, low, closed_df_indexed, atr14, close
                 )
-                log(f"   🔴 CD- score={score}/6")
-                for d in details:
-                    log(f"      {d}")
-                if score >= 3:  # حداقل Base3
+                if score >= 3:
                     signals.append({
                         'type': 'SELL', 'div_type': 'classic', 'score': score,
                         'details': details, 'p1': ph_1, 'p2': ph_2,
@@ -1403,14 +1683,10 @@ def detect_signal(df, state, symbol, debug=False):
                     })
             
             if is_hidden_bear:
-                log(f"   🔴 HD- check | PH1={ph_1['price']:.4f} (RSI={ph_1['rsi']:.2f}) → PH2={ph_2['price']:.4f} (RSI={ph_2['rsi']:.2f})")
                 score, details = calculate_divergence_score(
                     ph_1, ph_2, 'hidden', 'SELL', bar1, bar2,
                     hist_line, high, low, closed_df_indexed, atr14, close
                 )
-                log(f"   🔴 HD- score={score}/6")
-                for d in details:
-                    log(f"      {d}")
                 if score >= 3:
                     signals.append({
                         'type': 'SELL', 'div_type': 'hidden', 'score': score,
@@ -1419,10 +1695,9 @@ def detect_signal(df, state, symbol, debug=False):
                     })
 
     # ================================================================
-    # انتخاب بهترین سیگنال
+    # انتخاب بهترین سیگنال و ارسال لاگ کامل
     # ================================================================
     if signals:
-        # اولویت با امتیاز بالاتر، در صورت تساوی CD بر HD اولویت دارد
         best = max(signals, key=lambda x: (x['score'], 1 if x['div_type'] == 'classic' else 0))
         signal = best['type']
         
@@ -1439,10 +1714,34 @@ def detect_signal(df, state, symbol, debug=False):
             target = resolve_final_target(entry_price, stop, tp_raw, direction)
             emoji, label = classify_signal(best['score'])
             
+            # ============================================================
+            # 🔥 تولید لاگ کامل Pine-Exact
+            # ============================================================
+            pine_debug_log = generate_pine_exact_debug_log(
+                symbol, signal, best['div_type'], best['score'], best['details'],
+                best['p1'], best['p2'], best['bar1'], best['bar2'],
+                entry_price, stop, target,
+                closed_df_indexed, rsi_val, macd_line, hist_line, atr14,
+                close, high, low
+            )
+            
+            # ارسال لاگ به تلگرام
+            try:
+                send_telegram_message(pine_debug_log)
+                logger.info(f"[DEBUG LOG] Sent Pine-Exact debug log for {symbol}")
+            except Exception as e:
+                logger.error(f"[DEBUG LOG] Failed to send: {e}")
+            
+            # ذخیره در فایل
+            try:
+                with open(f"pine_debug_{symbol}_{format_iran_date()}.txt", "a", encoding="utf-8") as f:
+                    f.write(pine_debug_log + "\n\n")
+            except Exception as e:
+                logger.error(f"[DEBUG FILE] Error: {e}")
+            
             log(f"   ✅ SIGNAL: {signal} {best['div_type']} | Score={best['score']}/6 | {label}")
             log(f"      Entry={entry_price:.4f}, SL={stop:.4f}, TP={target:.4f}")
             
-            # ذخیره لاگ در فایل
             save_debug_log_to_file(symbol, debug_file_lines)
             
             return (signal, entry_price, stop, target, early_signal, 
@@ -1452,69 +1751,12 @@ def detect_signal(df, state, symbol, debug=False):
     if not signals:
         log(f"   ⚪ No signal (none passed Base3)")
 
-    # DEBUG LOG
-    log("   " + "=" * 70)
-    log("   🔬 FULL DEBUG LOG (Pine-Exact Pivot + Base3 Gating v2.0)")
-    log("   " + "=" * 70)
-    log(f"   📊 GENERAL:")
-    log(f"      Symbol: {symbol}")
-    log(f"      Time: {format_iran_time()}")
-    log(f"      Total Candles (n): {n}")
-    log(f"      New Pivot Highs: {len(new_pivots_high)}")
-    log(f"      New Pivot Lows: {len(new_pivots_low)}")
-    log(f"      Total Pivot Highs: {len(state.pivot_highs)}")
-    log(f"      Total Pivot Lows: {len(state.pivot_lows)}")
-    log("")
-    log(f"   📈 CURRENT INDICATORS:")
-    log(f"      Entry Price: {entry_price:.4f}")
-    log(f"      RSI(14)[-1]: {rsi_val.iloc[-1]:.2f}")
-    log(f"      MACD Line[-1]: {macd_line.iloc[-1]:.6f}")
-    log(f"      MACD Hist[-1]: {hist_line.iloc[-1]:.6f}")
-    log(f"      ATR(14)[-1]: {atr14.iloc[-1]:.4f}")
-    log("")
-    log(f"   🏁 FINAL RESULT:")
-    if signals:
-        best = max(signals, key=lambda x: (x['score'], 1 if x['div_type'] == 'classic' else 0))
-        log(f"      ✅ {best['type']} SIGNAL | Score={best['score']}/6 | Type={best['div_type']}")
-        log(f"      Details:")
-        for d in best['details']:
-            log(f"         {d}")
-    else:
-        log(f"      ❌ NO SIGNAL")
-    log("   " + "=" * 70)
-
     save_debug_log_to_file(symbol, debug_file_lines)
-
-    # Telegram log
-    current_time = time.time()
-    should_send = False
-    if state.telegram_log_count < 5:
-        if state.last_telegram_log_time == 0 or (current_time - state.last_telegram_log_time) >= 300:
-            should_send = True
-    else:
-        if current_time - state.last_telegram_log_time >= 21600:
-            should_send = True
-
-    if should_send:
-        state.last_telegram_log_time = current_time
-        state.telegram_log_count += 1
-        try:
-            telegram_debug = "\n".join(debug_log)
-            prefix = "🟢" if len(new_pivots_high)+len(new_pivots_low) > 0 else "ℹ️"
-            send_telegram_message(
-                f"{prefix} لاگ #{state.telegram_log_count} — {symbol} {HASHTAGS['log']}\n"
-                f"━━━━━━━━━━━━━━━━━━━━━━\n"
-                f"```\n{telegram_debug[:3000]}\n```\n"
-                f"━━━━━━━━━━━━━━━━━━━━━━\n"
-                f"🕒 {format_iran_time()}"
-            )
-        except Exception as e:
-            logger.error(f"[TELEGRAM] {e}")
 
     return None, None, None, None, early_signal, None, None, None, [], None, None
 
 # =====================================================================================
-# ادامه کدهای اصلی
+# ادامه کدهای اصلی (بدون تغییر)
 # =====================================================================================
 def track_open_signals(exchange):
     history = load_history()
@@ -1772,12 +2014,25 @@ if __name__ == "__main__":
     hashtag_list = "\n".join([f"• {v} → {k}" for k, v in HASHTAGS.items()])
     send_telegram_message(
         f"🤖 DTM Pro — آنلاین {HASHTAGS['startup']}\n\n"
-        f"🧠 DTM Divergence (Pine Script Mirror — v2.0)\n"
+        f"🧠 DTM Divergence (Pine Script Mirror — v3.0 with Full Debug)\n"
         f"📊 سیگنال + ترید خودکار\n\n"
         f"⚙️ Pivot: 5/3 (Pine-Exact: strict, value on confirmation bar)\n"
         f"⚙️ Gating: Base3 (RSI+MACDl+MACDh) + Trend/Fib/PA امتیازی\n"
         f"⚙️ همه ۴ نوع واگرایی همزمان بررسی میشوند\n"
         f"🔧 ETH=50x | LTC/DOGE=75x\n\n"
+        f"📋 Pine-Exact Debug Log فعال است:\n"
+        f"   • Data & Candle Alignment\n"
+        f"   • NA / NaN و Initialization\n"
+        f"   • RMA / RSI Calculation\n"
+        f"   • EMA Calculation (MACD)\n"
+        f"   • ATR و True Range\n"
+        f"   • History References [1]\n"
+        f"   • Fibonacci Swing Detection\n"
+        f"   • Price Action Conditions\n"
+        f"   • Trend Regression (ta.linreg)\n"
+        f"   • Crossover / Crossunder\n"
+        f"   • State Persistence\n"
+        f"   • Realtime / Bar-Close Behavior\n\n"
         f"📌 هشتگ‌های ثابت:\n{hashtag_list}\n\n"
         f"🕒 {format_iran_time()}"
     )
