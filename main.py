@@ -2,22 +2,21 @@
 """
 DTM Divergence Auto-Trading Bot - TheTrueTrade
 ===============================================
-منطق تشخیص سیگنال: کاملاً مطابق با dtm(1).py (Pine Script)
+منطق تشخیص سیگنال: کاملاً عین dtm(1).py
 """
 
 import os
 import time
 import threading
-import traceback
 import hashlib
 import hmac
 import requests
-import numpy as np
-import pandas as pd
-from datetime import datetime, timezone, timedelta
-from flask import Flask
 import json
 import logging
+from datetime import datetime, timezone, timedelta
+from flask import Flask
+import pandas as pd
+import numpy as np
 from typing import Dict, Any, Optional, List, Tuple
 
 # =====================================================================================
@@ -62,8 +61,6 @@ HASHTAGS = {
     "stop": "#Stop",
     "daily": "#Daily",
     "monthly": "#Monthly",
-    "proximity_target": "#NearTP",
-    "proximity_stop": "#NearSL",
     "order_request": "#OrderReq",
     "order_response": "#OrderOK",
     "order_error": "#OrderErr",
@@ -82,8 +79,7 @@ GRP_SCORE = "Min Confirmations"
 GRP_FIB = "Fibonacci"
 GRP_CANDLE = "Price Action"
 
-# پارامترهای ورودی (مطابق با input های کد اول)
-PIVOT_MODE = "سریع (5/3)"  # یا "استاندارد (5/5)"
+PIVOT_MODE = "سریع (5/3)"
 RSI_LEN = 14
 MACD_FAST = 12
 MACD_SLOW = 26
@@ -105,8 +101,7 @@ ENABLE_MTF = False
 MTF_TIMEFRAME = "240"
 
 LEFT_BARS = 5
-RIGHT_BARS = 3  # چون PIVOT_MODE = "سریع (5/3)"
-
+RIGHT_BARS = 3
 STOP_BUFFER_PCT = 0.05
 HISTORY_BARS = 1000
 API_RETURNS_OPEN_CANDLE = False
@@ -308,7 +303,7 @@ class TrueTradePrivateExchange:
             if 'takeProfit' in params:
                 order_data["takeProfit"] = f"{params['takeProfit']:.{prec}f}"
 
-        self._send_telegram_message(
+        send_telegram_message(
             f"📤 ثبت سفارش - درخواست {HASHTAGS['order_request']}\n"
             f"━━━━━━━━━━━━━━━━━━━━━━\n"
             f"🔹 Symbol: {symbol}\n"
@@ -318,20 +313,20 @@ class TrueTradePrivateExchange:
             f"🔧 Leverage: {order_data['leverage']}\n"
             f"📦 Body:\n```\n{json.dumps(order_data, indent=2)}\n```\n"
             f"━━━━━━━━━━━━━━━━━━━━━━\n"
-            f"🕒 {self._format_iran_time()}"
+            f"🕒 {format_iran_time()}"
         )
 
         try:
             result = self._request('POST', '/futures/positions', order_data)
 
-            self._send_telegram_message(
+            send_telegram_message(
                 f"📥 ثبت سفارش - پاسخ {HASHTAGS['order_response']}\n"
                 f"━━━━━━━━━━━━━━━━━━━━━━\n"
                 f"🔹 Symbol: {symbol}\n"
                 f"✅ Success - Position ID: {result.get('positionId', 'N/A')}\n"
                 f"📦 Response:\n```\n{json.dumps(result, indent=2)[:500]}\n```\n"
                 f"━━━━━━━━━━━━━━━━━━━━━━\n"
-                f"🕒 {self._format_iran_time()}"
+                f"🕒 {format_iran_time()}"
             )
 
             return {
@@ -372,7 +367,7 @@ class TrueTradePrivateExchange:
                 except:
                     error_detail = error_body[:500]
 
-            self._send_telegram_message(
+            send_telegram_message(
                 f"❌ ثبت سفارش - خطا {HASHTAGS['order_error']}\n"
                 f"━━━━━━━━━━━━━━━━━━━━━━\n"
                 f"🔹 Symbol: {symbol}\n"
@@ -385,7 +380,7 @@ class TrueTradePrivateExchange:
                 f"━━━━━━━━━━━━━━━━━━━━━━\n"
                 f"📥 پاسخ کامل:\n```\n{error_body[:1000]}\n```\n"
                 f"━━━━━━━━━━━━━━━━━━━━━━\n"
-                f"🕒 {self._format_iran_time()}"
+                f"🕒 {format_iran_time()}"
             )
             raise
 
@@ -395,362 +390,102 @@ class TrueTradePrivateExchange:
         rounded = round(price / tick) * tick
         return round(rounded, precision)
 
-    def _send_telegram_message(self, message: str):
-        try:
-            url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-            response = requests.post(url, json={"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": "Markdown"}, timeout=30)
-            if response.status_code != 200:
-                logger.error(f"[TELEGRAM] Status: {response.status_code}, Response: {response.text[:200]}")
-        except Exception as e:
-            logger.error(f"[TELEGRAM] Error: {e}")
+# =====================================================================================
+# ======================== توابع کمکی سراسری =========================================
+# =====================================================================================
 
-    def _format_iran_time(self, dt=None):
-        if dt is None:
-            dt = datetime.now(timezone(timedelta(hours=3, minutes=30)))
-        return dt.strftime('%Y-%m-%d %H:%M:%S')
+def send_telegram_message(message: str):
+    try:
+        url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+        response = requests.post(url, json={"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": "Markdown"}, timeout=30)
+        if response.status_code != 200:
+            logger.error(f"[TELEGRAM] Status: {response.status_code}, Response: {response.text[:200]}")
+    except Exception as e:
+        logger.error(f"[TELEGRAM] Error: {e}")
+
+def format_iran_time(dt=None):
+    if dt is None:
+        dt = datetime.now(timezone(timedelta(hours=3, minutes=30)))
+    return dt.strftime('%Y-%m-%d %H:%M:%S')
+
+def format_iran_date(dt=None):
+    if dt is None:
+        dt = datetime.now(timezone(timedelta(hours=3, minutes=30)))
+    return dt.strftime('%Y-%m-%d')
+
+def load_history():
+    if os.path.exists(HISTORY_FILE):
+        try:
+            with open(HISTORY_FILE) as f:
+                return json.load(f)
+        except:
+            return []
+    return []
+
+def save_history(h):
+    with open(HISTORY_FILE, 'w') as f:
+        json.dump(h, f, indent=2)
+
+def get_next_signal_number():
+    global SIGNAL_COUNTER
+    SIGNAL_COUNTER += 1
+    return SIGNAL_COUNTER
+
+def load_signal_counter():
+    global SIGNAL_COUNTER
+    history = load_history()
+    if history:
+        SIGNAL_COUNTER = len(history)
+    else:
+        SIGNAL_COUNTER = 0
+
+def update_trade_result(signal_time, result, close_price, close_time, pnl=None, commission=None):
+    h = load_history()
+    for t in h:
+        if t.get('signal_time') == signal_time:
+            t['result'] = result
+            t['close_price'] = close_price
+            t['close_time'] = close_time
+            if pnl is not None:
+                t['realized_pnl'] = pnl
+            if commission is not None:
+                t['commission'] = commission
+            logger.info(f"[HISTORY] Updated trade {signal_time}: Result={result}, PnL={pnl}")
+            break
+    save_history(h)
+
+def save_debug_log_to_file(symbol, debug_log_lines):
+    try:
+        today = format_iran_date()
+        log_file = "full_debug_log.txt"
+        with open(log_file, "a", encoding="utf-8") as f:
+            f.write(f"\n{'═' * 80}\n")
+            f.write(f"📅 DATE: {today} | SYMBOL: {symbol}\n")
+            f.write(f"{'═' * 80}\n\n")
+            for line in debug_log_lines:
+                f.write(line + "\n")
+            f.write("-" * 70 + "\n\n")
+    except Exception as e:
+        logger.error(f"[DEBUG FILE] Error writing log: {e}")
 
 # =====================================================================================
 # ======================== بخش تشخیص سیگنال ==========================================
-# ======================== کاملاً مطابق با dtm(1).py ================================
+# ======================== عین کد اول (dtm(1).py) ===================================
 # =====================================================================================
 
-def calc_rma(series, length):
-    """مطابق ta.rma در Pine Script"""
-    n = len(series)
-    rma = pd.Series(np.nan, index=series.index)
-    if n == 0:
-        return rma
-    alpha = 1.0 / length
-    vals = series.to_numpy(dtype=float)
-
-    leading_na = 0
-    while leading_na < n and np.isnan(vals[leading_na]):
-        leading_na += 1
-
-    seed_idx = leading_na + length - 1
-    if seed_idx >= n:
-        return rma
-
-    prev = vals[seed_idx - length + 1: seed_idx + 1].mean()
-    rma.iloc[seed_idx] = prev
-    for i in range(seed_idx + 1, n):
-        prev = alpha * vals[i] + (1 - alpha) * prev
-        rma.iloc[i] = prev
-    return rma
-
-def calc_rsi(close, length=14):
-    """مطابق ta.rsi در Pine Script"""
-    delta = close.diff()
-    gain = delta.clip(lower=0)
-    loss = -delta.clip(upper=0)
-    avg_gain = calc_rma(gain, length)
-    avg_loss = calc_rma(loss, length)
-    rsi = pd.Series(np.nan, index=close.index)
-    for i in range(len(close)):
-        ag = avg_gain.iloc[i]
-        al = avg_loss.iloc[i]
-        if pd.isna(ag) or pd.isna(al):
-            continue
-        if al == 0:
-            rsi.iloc[i] = 100.0
-        elif ag == 0:
-            rsi.iloc[i] = 0.0
-        else:
-            rsi.iloc[i] = 100.0 - (100.0 / (1.0 + ag / al))
-    return rsi
-
-def calc_macd(close, fast=12, slow=26, signal=9):
-    """مطابق ta.macd در Pine Script"""
-    def calc_ema(series, length):
-        alpha = 2.0 / (length + 1)
-        ema = pd.Series(np.nan, index=series.index)
-        if len(series) == 0:
-            return ema
-        first_valid = series.first_valid_index()
-        if first_valid is None:
-            return ema
-        start_pos = series.index.get_loc(first_valid)
-        ema.iloc[start_pos] = series.iloc[start_pos]
-        prev = ema.iloc[start_pos]
-        for i in range(start_pos + 1, len(series)):
-            prev = alpha * series.iloc[i] + (1 - alpha) * prev
-            ema.iloc[i] = prev
-        return ema
-    
-    ema_fast = calc_ema(close, fast)
-    ema_slow = calc_ema(close, slow)
-    macd_line = ema_fast - ema_slow
-    signal_line = calc_ema(macd_line, signal)
-    hist_line = macd_line - signal_line
-    return macd_line, signal_line, hist_line
-
-def calc_atr(high, low, close, length=14):
-    """مطابق ta.atr در Pine Script"""
-    prev_close = close.shift(1)
-    tr = pd.concat([high - low, (high - prev_close).abs(), (low - prev_close).abs()], axis=1).max(axis=1)
-    return calc_rma(tr, length)
-
-def find_pivot_high(high, left_bars=LEFT_BARS, right_bars=RIGHT_BARS):
-    """مطابق ta.pivothigh در Pine Script"""
-    n = len(high)
-    result = pd.Series(np.nan, index=high.index, dtype=float)
-    
-    for i in range(left_bars, n - right_bars):
-        candidate = high.iloc[i]
-        
-        left_ok = True
-        for j in range(1, left_bars + 1):
-            if high.iloc[i - j] >= candidate:
-                left_ok = False
-                break
-        
-        if not left_ok:
-            continue
-            
-        right_ok = True
-        for j in range(1, right_bars + 1):
-            if high.iloc[i + j] >= candidate:
-                right_ok = False
-                break
-        
-        if right_ok:
-            result.iloc[i + right_bars] = candidate
-            
-    return result
-
-def find_pivot_low(low, left_bars=LEFT_BARS, right_bars=RIGHT_BARS):
-    """مطابق ta.pivotlow در Pine Script"""
-    n = len(low)
-    result = pd.Series(np.nan, index=low.index, dtype=float)
-    
-    for i in range(left_bars, n - right_bars):
-        candidate = low.iloc[i]
-        
-        left_ok = True
-        for j in range(1, left_bars + 1):
-            if low.iloc[i - j] <= candidate:
-                left_ok = False
-                break
-        
-        if not left_ok:
-            continue
-            
-        right_ok = True
-        for j in range(1, right_bars + 1):
-            if low.iloc[i + j] <= candidate:
-                right_ok = False
-                break
-        
-        if right_ok:
-            result.iloc[i + right_bars] = candidate
-            
-    return result
-
-def check_color_change(hist_series, bar_start, bar_end, need_red_phase):
-    """مطابق checkColorChange در کد اول"""
-    if bar_start is None or bar_end is None or bar_end <= bar_start:
-        return False
-    
-    found = False
-    for i in range(bar_start + 1, bar_end + 1):
-        if i >= len(hist_series):
-            break
-        h = hist_series.iloc[i]
-        if need_red_phase and h < 0:
-            found = True
-            break
-        if not need_red_phase and h > 0:
-            found = True
-            break
-    
-    return found
-
-def is_trending_up(close_series, ref_bar):
-    """مطابق isTrendingUp در کد اول"""
-    if ref_bar is None:
-        return False
-    
-    offset = ref_bar
-    if offset < 0 or offset + TREND_LOOKBACK >= len(close_series):
-        return False
-    
-    y_current = close_series.iloc[offset - TREND_LOOKBACK + 1:offset + 1].values
-    y_past = close_series.iloc[offset - 2 * TREND_LOOKBACK + 1:offset - TREND_LOOKBACK + 1].values
-    
-    if len(y_current) < 2 or len(y_past) < 2:
-        return False
-    
-    x = np.arange(len(y_current))
-    slope_current, intercept_current = np.polyfit(x, y_current, 1)
-    fitted_end_current = intercept_current + slope_current * (len(y_current) - 1)
-    
-    x = np.arange(len(y_past))
-    slope_past, intercept_past = np.polyfit(x, y_past, 1)
-    fitted_end_past = intercept_past + slope_past * (len(y_past) - 1)
-    
-    total_slope = fitted_end_current - fitted_end_past
-    avg_price = y_current.mean()
-    slope_pct = (total_slope / avg_price) * 100 if avg_price != 0 else 0.0
-    
-    return slope_pct > TREND_SLOPE_MIN_PCT
-
-def is_trending_down(close_series, ref_bar):
-    """مطابق isTrendingDown در کد اول"""
-    if ref_bar is None:
-        return False
-    
-    offset = ref_bar
-    if offset < 0 or offset + TREND_LOOKBACK >= len(close_series):
-        return False
-    
-    y_current = close_series.iloc[offset - TREND_LOOKBACK + 1:offset + 1].values
-    y_past = close_series.iloc[offset - 2 * TREND_LOOKBACK + 1:offset - TREND_LOOKBACK + 1].values
-    
-    if len(y_current) < 2 or len(y_past) < 2:
-        return False
-    
-    x = np.arange(len(y_current))
-    slope_current, intercept_current = np.polyfit(x, y_current, 1)
-    fitted_end_current = intercept_current + slope_current * (len(y_current) - 1)
-    
-    x = np.arange(len(y_past))
-    slope_past, intercept_past = np.polyfit(x, y_past, 1)
-    fitted_end_past = intercept_past + slope_past * (len(y_past) - 1)
-    
-    total_slope = fitted_end_current - fitted_end_past
-    avg_price = y_current.mean()
-    slope_pct = (total_slope / avg_price) * 100 if avg_price != 0 else 0.0
-    
-    return slope_pct < -TREND_SLOPE_MIN_PCT
-
-def find_trend_start_low(low_series, ref_bar):
-    """مطابق findTrendStartLow در کد اول"""
-    if ref_bar is None:
-        return None
-    
-    offset = ref_bar
-    if offset < 0 or offset + FIB_TREND_SEARCH_BARS >= len(low_series):
-        return None
-    
-    result = low_series.iloc[offset:offset + FIB_TREND_SEARCH_BARS].min()
-    return result if not pd.isna(result) else None
-
-def find_trend_start_high(high_series, ref_bar):
-    """مطابق findTrendStartHigh در کد اول"""
-    if ref_bar is None:
-        return None
-    
-    offset = ref_bar
-    if offset < 0 or offset + FIB_TREND_SEARCH_BARS >= len(high_series):
-        return None
-    
-    result = high_series.iloc[offset:offset + FIB_TREND_SEARCH_BARS].max()
-    return result if not pd.isna(result) else None
-
-def check_fib_level(fib_start, fib_end, target_price, is_retrace_down):
-    """مطابق checkFibLevel در کد اول"""
-    if fib_start is None or fib_end is None or fib_end == fib_start:
-        return False
-    
-    range_ = fib_end - fib_start
-    tol = abs(range_) * (FIB_TOLERANCE_PCT / 100.0)
-    
-    if is_retrace_down:
-        level618 = fib_end - range_ * 0.618
-        level786 = fib_end - range_ * 0.786
-    else:
-        level618 = fib_end + abs(range_) * 0.618
-        level786 = fib_end + abs(range_) * 0.786
-    
-    ok = False
-    if FIB_USE_618 and abs(target_price - level618) <= tol:
-        ok = True
-    if FIB_USE_786 and abs(target_price - level786) <= tol:
-        ok = True
-    
-    return ok
-
-def check_price_action(df, confirm_bar, direction, atr_val):
-    """مطابق priceAction در کد اول"""
-    if confirm_bar is None or confirm_bar < 0 or confirm_bar >= len(df):
-        return False, []
-    
-    last = df.iloc[confirm_bar]
-    candle_range = last['high'] - last['low']
-    candle_body = abs(last['close'] - last['open'])
-    upper_shadow = last['high'] - max(last['close'], last['open'])
-    lower_shadow = min(last['close'], last['open']) - last['low']
-    
-    size_ok = candle_range >= MIN_CANDLE_ATR_RATIO * atr_val
-    
-    start_idx = max(0, confirm_bar - BIG_CANDLE_AVG_LEN + 1)
-    window = df.iloc[start_idx:confirm_bar + 1]
-    avg_body = (window['close'] - window['open']).abs().mean()
-    if pd.isna(avg_body) or avg_body == 0:
-        avg_body = candle_body if candle_body > 0 else 0.00001
-    
-    pa = False
-    pa_reasons = []
-    
-    if direction == "BUY":
-        bullish_wick = (candle_range > 0 and
-                        lower_shadow >= SHADOW_TO_BODY_RATIO * candle_body and
-                        (upper_shadow / candle_range) * 100 <= MAX_OPPOSITE_SHADOW_PCT and
-                        size_ok)
-        big_green = (last['close'] > last['open'] and
-                     candle_body >= BIG_CANDLE_MULTIPLIER * avg_body and
-                     size_ok)
-        if bullish_wick:
-            pa = True
-            pa_reasons.append("Bullish Wick")
-        if big_green:
-            pa = True
-            pa_reasons.append("Big Green Candle")
-    else:
-        bearish_wick = (candle_range > 0 and
-                        upper_shadow >= SHADOW_TO_BODY_RATIO * candle_body and
-                        (lower_shadow / candle_range) * 100 <= MAX_OPPOSITE_SHADOW_PCT and
-                        size_ok)
-        bearish_hanging = (candle_range > 0 and
-                           lower_shadow >= SHADOW_TO_BODY_RATIO * candle_body and
-                           (upper_shadow / candle_range) * 100 <= MAX_OPPOSITE_SHADOW_PCT and
-                           size_ok)
-        big_red = (last['close'] < last['open'] and
-                   candle_body >= BIG_CANDLE_MULTIPLIER * avg_body and
-                   size_ok)
-        if bearish_wick:
-            pa = True
-            pa_reasons.append("Bearish Wick")
-        if bearish_hanging:
-            pa = True
-            pa_reasons.append("Bearish Hanging Man")
-        if big_red:
-            pa = True
-            pa_reasons.append("Big Red Candle")
-    
-    return pa, pa_reasons
-
-def passes_min_requirement(base3, fib_ok, pa_ok):
-    """مطابق passesMinRequirement در کد اول"""
-    result = False
-    if base3:
-        if MIN_CONFIRMATIONS == '۳ تعییدیه (حداقل مجاز)':
-            result = True
-        elif MIN_CONFIRMATIONS == '۳ تعییدیه + فیبوناچی (۴ امتیاز) [Custom]':
-            result = fib_ok
-        elif MIN_CONFIRMATIONS == '۳ تعییدیه + پرایس\u200cاکشن (۴ امتیاز) [Custom]':
-            result = pa_ok
-        elif MIN_CONFIRMATIONS == '۵ امتیاز کامل (ایده\u200cآل)':
-            result = fib_ok and pa_ok
-    return result
+# کتابخانه pynecore - عین کد اول
+from pynecore import pine_range
+from pynecore.lib import (
+    bar_index, barmerge, close, color, high, input, location, low, math, na,
+    open, plotshape, request, script, shape, size, strategy, syminfo, ta
+)
+from pynecore.types import Persistent, Series
 
 # =====================================================================================
-# کلاس وضعیت — مطابق با Persistent در کد اول
+# کلاس وضعیت — برای جایگزینی Persistent در کد اول
 # =====================================================================================
-
 class SymbolState:
     def __init__(self):
-        # پیوت‌های بالا (High) — مطابق ph_* در کد اول
         self.ph_price_2 = None
         self.ph_price_1 = None
         self.ph_bar_2 = None
@@ -762,7 +497,6 @@ class SymbolState:
         self.ph_hist_2 = None
         self.ph_hist_1 = None
         
-        # پیوت‌های پایین (Low) — مطابق pl_* در کد اول
         self.pl_price_2 = None
         self.pl_price_1 = None
         self.pl_bar_2 = None
@@ -859,14 +593,319 @@ def load_states():
         logger.info(f"[STATE] No state file found, starting fresh")
 
 # =====================================================================================
-# تابع تشخیص سیگنال — کاملاً مطابق با منطق کد اول
+# تابع پیاده‌سازی محاسبات Pine در پایتون (برای داده‌های واقعی)
+# =====================================================================================
+
+def calc_rma(series, length):
+    n = len(series)
+    rma = pd.Series(np.nan, index=series.index)
+    if n == 0:
+        return rma
+    alpha = 1.0 / length
+    vals = series.to_numpy(dtype=float)
+
+    leading_na = 0
+    while leading_na < n and np.isnan(vals[leading_na]):
+        leading_na += 1
+
+    seed_idx = leading_na + length - 1
+    if seed_idx >= n:
+        return rma
+
+    prev = vals[seed_idx - length + 1: seed_idx + 1].mean()
+    rma.iloc[seed_idx] = prev
+    for i in range(seed_idx + 1, n):
+        prev = alpha * vals[i] + (1 - alpha) * prev
+        rma.iloc[i] = prev
+    return rma
+
+def calc_rsi(close, length=14):
+    delta = close.diff()
+    gain = delta.clip(lower=0)
+    loss = -delta.clip(upper=0)
+    avg_gain = calc_rma(gain, length)
+    avg_loss = calc_rma(loss, length)
+    rsi = pd.Series(np.nan, index=close.index)
+    for i in range(len(close)):
+        ag = avg_gain.iloc[i]
+        al = avg_loss.iloc[i]
+        if pd.isna(ag) or pd.isna(al):
+            continue
+        if al == 0:
+            rsi.iloc[i] = 100.0
+        elif ag == 0:
+            rsi.iloc[i] = 0.0
+        else:
+            rsi.iloc[i] = 100.0 - (100.0 / (1.0 + ag / al))
+    return rsi
+
+def calc_macd(close, fast=12, slow=26, signal=9):
+    def calc_ema(series, length):
+        alpha = 2.0 / (length + 1)
+        ema = pd.Series(np.nan, index=series.index)
+        if len(series) == 0:
+            return ema
+        first_valid = series.first_valid_index()
+        if first_valid is None:
+            return ema
+        start_pos = series.index.get_loc(first_valid)
+        ema.iloc[start_pos] = series.iloc[start_pos]
+        prev = ema.iloc[start_pos]
+        for i in range(start_pos + 1, len(series)):
+            prev = alpha * series.iloc[i] + (1 - alpha) * prev
+            ema.iloc[i] = prev
+        return ema
+    
+    ema_fast = calc_ema(close, fast)
+    ema_slow = calc_ema(close, slow)
+    macd_line = ema_fast - ema_slow
+    signal_line = calc_ema(macd_line, signal)
+    hist_line = macd_line - signal_line
+    return macd_line, signal_line, hist_line
+
+def calc_atr(high, low, close, length=14):
+    prev_close = close.shift(1)
+    tr = pd.concat([high - low, (high - prev_close).abs(), (low - prev_close).abs()], axis=1).max(axis=1)
+    return calc_rma(tr, length)
+
+def find_pivot_high(high, left_bars=LEFT_BARS, right_bars=RIGHT_BARS):
+    n = len(high)
+    result = pd.Series(np.nan, index=high.index, dtype=float)
+    
+    for i in range(left_bars, n - right_bars):
+        candidate = high.iloc[i]
+        
+        left_ok = True
+        for j in range(1, left_bars + 1):
+            if high.iloc[i - j] >= candidate:
+                left_ok = False
+                break
+        
+        if not left_ok:
+            continue
+            
+        right_ok = True
+        for j in range(1, right_bars + 1):
+            if high.iloc[i + j] >= candidate:
+                right_ok = False
+                break
+        
+        if right_ok:
+            result.iloc[i + right_bars] = candidate
+            
+    return result
+
+def find_pivot_low(low, left_bars=LEFT_BARS, right_bars=RIGHT_BARS):
+    n = len(low)
+    result = pd.Series(np.nan, index=low.index, dtype=float)
+    
+    for i in range(left_bars, n - right_bars):
+        candidate = low.iloc[i]
+        
+        left_ok = True
+        for j in range(1, left_bars + 1):
+            if low.iloc[i - j] <= candidate:
+                left_ok = False
+                break
+        
+        if not left_ok:
+            continue
+            
+        right_ok = True
+        for j in range(1, right_bars + 1):
+            if low.iloc[i + j] <= candidate:
+                right_ok = False
+                break
+        
+        if right_ok:
+            result.iloc[i + right_bars] = candidate
+            
+    return result
+
+def check_color_change(hist_series, bar_start, bar_end, need_red_phase):
+    found = False
+    if bar_start is not None and bar_end is not None and bar_end > bar_start:
+        for i in range(bar_start + 1, bar_end + 1):
+            if i >= len(hist_series):
+                break
+            h = hist_series.iloc[i]
+            if need_red_phase and h < 0:
+                found = True
+                break
+            if not need_red_phase and h > 0:
+                found = True
+                break
+    return found
+
+def is_trending_up(close_series, ref_bar):
+    result = False
+    if ref_bar is not None:
+        offset = ref_bar
+        if offset >= 0 and offset + TREND_LOOKBACK < len(close_series):
+            y_current = close_series.iloc[offset - TREND_LOOKBACK + 1:offset + 1].values
+            y_past = close_series.iloc[offset - 2 * TREND_LOOKBACK + 1:offset - TREND_LOOKBACK + 1].values
+            
+            if len(y_current) >= 2 and len(y_past) >= 2:
+                x = np.arange(len(y_current))
+                slope_current, intercept_current = np.polyfit(x, y_current, 1)
+                fitted_end_current = intercept_current + slope_current * (len(y_current) - 1)
+                
+                x = np.arange(len(y_past))
+                slope_past, intercept_past = np.polyfit(x, y_past, 1)
+                fitted_end_past = intercept_past + slope_past * (len(y_past) - 1)
+                
+                total_slope = fitted_end_current - fitted_end_past
+                avg_price = y_current.mean()
+                slope_pct = (total_slope / avg_price) * 100 if avg_price != 0 else 0.0
+                result = slope_pct > TREND_SLOPE_MIN_PCT
+    return result
+
+def is_trending_down(close_series, ref_bar):
+    result = False
+    if ref_bar is not None:
+        offset = ref_bar
+        if offset >= 0 and offset + TREND_LOOKBACK < len(close_series):
+            y_current = close_series.iloc[offset - TREND_LOOKBACK + 1:offset + 1].values
+            y_past = close_series.iloc[offset - 2 * TREND_LOOKBACK + 1:offset - TREND_LOOKBACK + 1].values
+            
+            if len(y_current) >= 2 and len(y_past) >= 2:
+                x = np.arange(len(y_current))
+                slope_current, intercept_current = np.polyfit(x, y_current, 1)
+                fitted_end_current = intercept_current + slope_current * (len(y_current) - 1)
+                
+                x = np.arange(len(y_past))
+                slope_past, intercept_past = np.polyfit(x, y_past, 1)
+                fitted_end_past = intercept_past + slope_past * (len(y_past) - 1)
+                
+                total_slope = fitted_end_current - fitted_end_past
+                avg_price = y_current.mean()
+                slope_pct = (total_slope / avg_price) * 100 if avg_price != 0 else 0.0
+                result = slope_pct < -TREND_SLOPE_MIN_PCT
+    return result
+
+def find_trend_start_low(low_series, ref_bar):
+    result = None
+    if ref_bar is not None:
+        offset = ref_bar
+        if offset >= 0 and offset + FIB_TREND_SEARCH_BARS < len(low_series):
+            result = low_series.iloc[offset:offset + FIB_TREND_SEARCH_BARS].min()
+            if pd.isna(result):
+                result = None
+    return result
+
+def find_trend_start_high(high_series, ref_bar):
+    result = None
+    if ref_bar is not None:
+        offset = ref_bar
+        if offset >= 0 and offset + FIB_TREND_SEARCH_BARS < len(high_series):
+            result = high_series.iloc[offset:offset + FIB_TREND_SEARCH_BARS].max()
+            if pd.isna(result):
+                result = None
+    return result
+
+def check_fib_level(fib_start, fib_end, target_price, is_retrace_down):
+    ok = False
+    if fib_start is not None and fib_end is not None and fib_end != fib_start:
+        range_ = fib_end - fib_start
+        tol = abs(range_) * (FIB_TOLERANCE_PCT / 100.0)
+        if is_retrace_down:
+            level618 = fib_end - range_ * 0.618
+            level786 = fib_end - range_ * 0.786
+        else:
+            level618 = fib_end + abs(range_) * 0.618
+            level786 = fib_end + abs(range_) * 0.786
+        if FIB_USE_618 and abs(target_price - level618) <= tol:
+            ok = True
+        if FIB_USE_786 and abs(target_price - level786) <= tol:
+            ok = True
+    return ok
+
+def passes_min_requirement(base3, fib_ok, pa_ok):
+    result = False
+    if base3:
+        if MIN_CONFIRMATIONS == '۳ تعییدیه (حداقل مجاز)':
+            result = True
+        elif MIN_CONFIRMATIONS == '۳ تعییدیه + فیبوناچی (۴ امتیاز) [Custom]':
+            result = fib_ok
+        elif MIN_CONFIRMATIONS == '۳ تعییدیه + پرایس\u200cاکشن (۴ امتیاز) [Custom]':
+            result = pa_ok
+        elif MIN_CONFIRMATIONS == '۵ امتیاز کامل (ایده\u200cآل)':
+            result = fib_ok and pa_ok
+    return result
+
+def check_price_action(df, confirm_bar, direction, atr_val):
+    if confirm_bar is None or confirm_bar < 0 or confirm_bar >= len(df):
+        return False, []
+    
+    last = df.iloc[confirm_bar]
+    candle_range = last['high'] - last['low']
+    candle_body = abs(last['close'] - last['open'])
+    upper_shadow = last['high'] - max(last['close'], last['open'])
+    lower_shadow = min(last['close'], last['open']) - last['low']
+    
+    size_ok = candle_range >= MIN_CANDLE_ATR_RATIO * atr_val
+    
+    start_idx = max(0, confirm_bar - BIG_CANDLE_AVG_LEN + 1)
+    window = df.iloc[start_idx:confirm_bar + 1]
+    avg_body = (window['close'] - window['open']).abs().mean()
+    if pd.isna(avg_body) or avg_body == 0:
+        avg_body = candle_body if candle_body > 0 else 0.00001
+    
+    pa = False
+    pa_reasons = []
+    
+    if direction == "BUY":
+        bullish_wick = (candle_range > 0 and
+                        lower_shadow >= SHADOW_TO_BODY_RATIO * candle_body and
+                        (upper_shadow / candle_range) * 100 <= MAX_OPPOSITE_SHADOW_PCT and
+                        size_ok)
+        big_green = (last['close'] > last['open'] and
+                     candle_body >= BIG_CANDLE_MULTIPLIER * avg_body and
+                     size_ok)
+        if bullish_wick:
+            pa = True
+            pa_reasons.append("Bullish Wick")
+        if big_green:
+            pa = True
+            pa_reasons.append("Big Green Candle")
+    else:
+        bearish_wick = (candle_range > 0 and
+                        upper_shadow >= SHADOW_TO_BODY_RATIO * candle_body and
+                        (lower_shadow / candle_range) * 100 <= MAX_OPPOSITE_SHADOW_PCT and
+                        size_ok)
+        bearish_hanging = (candle_range > 0 and
+                           lower_shadow >= SHADOW_TO_BODY_RATIO * candle_body and
+                           (upper_shadow / candle_range) * 100 <= MAX_OPPOSITE_SHADOW_PCT and
+                           size_ok)
+        big_red = (last['close'] < last['open'] and
+                   candle_body >= BIG_CANDLE_MULTIPLIER * avg_body and
+                   size_ok)
+        if bearish_wick:
+            pa = True
+            pa_reasons.append("Bearish Wick")
+        if bearish_hanging:
+            pa = True
+            pa_reasons.append("Bearish Hanging Man")
+        if big_red:
+            pa = True
+            pa_reasons.append("Big Red Candle")
+    
+    return pa, pa_reasons
+
+# =====================================================================================
+# تابع تشخیص سیگنال — عین کد اول (با تطبیق داده‌های واقعی)
 # =====================================================================================
 
 def detect_signal(df, state, symbol):
-    """
-    کاملاً مطابق با dtm(1).py
-    خروجی: (signal, entry, stop, target, early, emoji, label, score, details, pivot1, pivot2)
-    """
+    debug_log = []
+    debug_file_lines = []
+    
+    def log(msg):
+        debug_log.append(msg)
+        debug_file_lines.append(msg)
+        logger.info(msg)
+    
+    log(f"🔍 DTM — {symbol} | {format_iran_time()}")
     
     if API_RETURNS_OPEN_CANDLE:
         closed_df = df.iloc[:-1].copy()
@@ -888,6 +927,7 @@ def detect_signal(df, state, symbol):
     closed_df_reset = closed_df.reset_index(drop=True)
     n = len(closed_df_reset)
     if n < 33:
+        log(f"❌ داده ناکافی: {n}")
         return None, None, None, None, False, None, None, 0, [], None, None
     
     # ============================================================
@@ -908,12 +948,13 @@ def detect_signal(df, state, symbol):
     pivot_low = find_pivot_low(low_series, LEFT_BARS, RIGHT_BARS)
     
     last_confirmed = n - 1 - RIGHT_BARS
-    bar_index = n - 1
+    current_bar_index = n - 1
+    
+    log(f"   n={n}, last_confirmed={last_confirmed}")
     
     # ============================================================
     # مقداردهی اولیه — مطابق با متغیرهای Persistent در کد اول
     # ============================================================
-    # پیوت‌های بالا (High)
     ph_price_2 = state.ph_price_2
     ph_price_1 = state.ph_price_1
     ph_bar_2 = state.ph_bar_2
@@ -925,7 +966,6 @@ def detect_signal(df, state, symbol):
     ph_hist_2 = state.ph_hist_2
     ph_hist_1 = state.ph_hist_1
     
-    # پیوت‌های پایین (Low)
     pl_price_2 = state.pl_price_2
     pl_price_1 = state.pl_price_1
     pl_bar_2 = state.pl_bar_2
@@ -958,7 +998,6 @@ def detect_signal(df, state, symbol):
         ph_hist_2 = float(hist_line.iloc[real_bar])
         new_pivot_high = True
         
-        # ذخیره در state
         state.ph_price_2 = ph_price_2
         state.ph_price_1 = ph_price_1
         state.ph_bar_2 = ph_bar_2
@@ -987,7 +1026,6 @@ def detect_signal(df, state, symbol):
         pl_hist_2 = float(hist_line.iloc[real_bar])
         new_pivot_low = True
         
-        # ذخیره در state
         state.pl_price_2 = pl_price_2
         state.pl_price_1 = pl_price_1
         state.pl_bar_2 = pl_bar_2
@@ -1004,11 +1042,12 @@ def detect_signal(df, state, symbol):
     state.last_processed_ts = closed_df.index[last_confirmed]
     early_signal = new_pivot_high or new_pivot_low
     
+    log(f"   new_high={1 if new_pivot_high else 0}, new_low={1 if new_pivot_low else 0} | mem: H={len([x for x in [ph_price_2, ph_price_1] if x is not None])} L={len([x for x in [pl_price_2, pl_price_1] if x is not None])}")
+    
     # ============================================================
-    # تشخیص واگرایی — مطابق با کد اول
+    # تشخیص واگرایی — عین کد اول
     # ============================================================
     
-    # متغیرهای کمکی برای ذخیره نتایج
     best_signal = None
     best_entry = None
     best_stop = None
@@ -1021,7 +1060,7 @@ def detect_signal(df, state, symbol):
     best_pivot2 = None
     
     # ============================================================
-    # 1. Classic Bearish — مطابق classicBearishBase3 در کد اول
+    # 1. Classic Bearish — عین کد اول
     # ============================================================
     if new_pivot_high and ph_bar_1 is not None:
         price_higher_high = ph_price_2 > ph_price_1
@@ -1041,46 +1080,54 @@ def detect_signal(df, state, symbol):
         confirm_bar = min(ph_bar_2 + RIGHT_BARS, n - 1)
         pa_ok, _ = check_price_action(closed_df_reset, confirm_bar, "SELL", atr14.iloc[confirm_bar])
         
-        # شرط‌های classicBearishBase3
         classic_bearish_cond1_rsi = price_higher_high and rsi_lower_high
         classic_bearish_cond2_macdl = price_higher_high and macd_lower_high
         classic_bearish_cond3_macdh = price_higher_high and hist_lower_high and both_peaks_green and macd_color_high
         classic_bearish_base3 = price_higher_high and trend_ok and classic_bearish_cond3_macdh and classic_bearish_cond1_rsi and classic_bearish_cond2_macdl
         
-        if passes_min_requirement(classic_bearish_base3, fib_ok, pa_ok):
-            entry_price = float(close_series.iloc[-1])
-            
-            # محاسبه استاپ و تارگت
-            if pl_price_2 is not None and pl_price_1 is not None:
-                stop_price = min(pl_price_1, pl_price_2) - STOP_BUFFER_PCT * atr14.iloc[-1]
-                mid_peak = high_series.iloc[pl_bar_1+1:pl_bar_2].max() if pl_bar_1 is not None and pl_bar_2 is not None else None
-                if mid_peak is not None and not pd.isna(mid_peak):
-                    target_price = mid_peak
-                    
-                    details = [
-                        f"✅ priceHigherHigh and rsiLowerHighOnPeaks",
-                        f"✅ priceHigherHigh and macdLineLowerHighOnPeaks",
-                        f"✅ priceHigherHigh and histLowerHighOnPeaks and bothPeaksGreen and macdColorChangedForHighs",
-                        f"✅ trendOkForBearish",
-                        f"✅ fibScoreBearish" if fib_ok else "❌ fibScoreBearish",
-                        f"✅ priceActionBearishAtPivot" if pa_ok else "❌ priceActionBearishAtPivot"
-                    ]
-                    score = 3 + (1 if trend_ok else 0) + (1 if fib_ok else 0) + (1 if pa_ok else 0)
-                    
-                    if score > best_score:
-                        best_signal = "SELL"
-                        best_entry = entry_price
-                        best_stop = stop_price
-                        best_target = target_price
-                        best_emoji = "🔴"
-                        best_label = "Classic Bearish"
-                        best_score = score
-                        best_details = details
-                        best_pivot1 = {'price': ph_price_1, 'rsi': ph_rsi_1, 'macdline': ph_macdline_1, 'hist': ph_hist_1, 'bar': ph_bar_1}
-                        best_pivot2 = {'price': ph_price_2, 'rsi': ph_rsi_2, 'macdline': ph_macdline_2, 'hist': ph_hist_2, 'bar': ph_bar_2}
+        log(f"   🔴 CD- check | PH1={ph_price_1:.4f} (RSI={ph_rsi_1:.2f}) → PH2={ph_price_2:.4f} (RSI={ph_rsi_2:.2f})")
+        
+        if classic_bearish_base3:
+            if passes_min_requirement(classic_bearish_base3, fib_ok, pa_ok):
+                entry_price = float(close_series.iloc[-1])
+                
+                if pl_price_2 is not None and pl_price_1 is not None:
+                    stop_price = min(pl_price_1, pl_price_2) - STOP_BUFFER_PCT * atr14.iloc[-1]
+                    mid_peak = high_series.iloc[pl_bar_1+1:pl_bar_2].max() if pl_bar_1 is not None and pl_bar_2 is not None else None
+                    if mid_peak is not None and not pd.isna(mid_peak):
+                        target_price = mid_peak
+                        
+                        details = [
+                            f"✅ priceHigherHigh and rsiLowerHighOnPeaks",
+                            f"✅ priceHigherHigh and macdLineLowerHighOnPeaks",
+                            f"✅ priceHigherHigh and histLowerHighOnPeaks and bothPeaksGreen and macdColorChangedForHighs",
+                            f"✅ trendOkForBearish",
+                            f"✅ fibScoreBearish" if fib_ok else "❌ fibScoreBearish",
+                            f"✅ priceActionBearishAtPivot" if pa_ok else "❌ priceActionBearishAtPivot"
+                        ]
+                        score = 3 + (1 if trend_ok else 0) + (1 if fib_ok else 0) + (1 if pa_ok else 0)
+                        
+                        if score > best_score:
+                            best_signal = "SELL"
+                            best_entry = entry_price
+                            best_stop = stop_price
+                            best_target = target_price
+                            best_emoji = "🔴"
+                            best_label = "Classic Bearish"
+                            best_score = score
+                            best_details = details
+                            best_pivot1 = {'price': ph_price_1, 'rsi': ph_rsi_1, 'macdline': ph_macdline_1, 'hist': ph_hist_1, 'bar': ph_bar_1}
+                            best_pivot2 = {'price': ph_price_2, 'rsi': ph_rsi_2, 'macdline': ph_macdline_2, 'hist': ph_hist_2, 'bar': ph_bar_2}
+        else:
+            log(f"   🔴 CD- score=0/6")
+            log(f"      {'✅' if rsi_lower_high else '❌'} RSI (rsiLowerHighOnPeaks)")
+            log(f"      {'✅' if macd_lower_high else '❌'} MACD Line (macdLineLowerHighOnPeaks)")
+            log(f"      {'✅' if hist_lower_high and both_peaks_green and macd_color_high else '❌'} MACD Histogram")
+            log(f"      {'✅' if trend_ok else '❌'} Trend (trendOkForBearish)")
+            log(f"      ❌ Base3 برقرار نیست")
     
     # ============================================================
-    # 2. Classic Bullish — مطابق classicBullishBase3 در کد اول
+    # 2. Classic Bullish — عین کد اول
     # ============================================================
     if new_pivot_low and pl_bar_1 is not None:
         price_lower_low = pl_price_2 < pl_price_1
@@ -1100,46 +1147,54 @@ def detect_signal(df, state, symbol):
         confirm_bar = min(pl_bar_2 + RIGHT_BARS, n - 1)
         pa_ok, _ = check_price_action(closed_df_reset, confirm_bar, "BUY", atr14.iloc[confirm_bar])
         
-        # شرط‌های classicBullishBase3
         classic_bullish_cond1_rsi = price_lower_low and rsi_higher_low
         classic_bullish_cond2_macdl = price_lower_low and macd_higher_low
         classic_bullish_cond3_macdh = price_lower_low and hist_higher_low and both_troughs_red and macd_color_low
         classic_bullish_base3 = price_lower_low and trend_ok and classic_bullish_cond3_macdh and classic_bullish_cond1_rsi and classic_bullish_cond2_macdl
         
-        if passes_min_requirement(classic_bullish_base3, fib_ok, pa_ok):
-            entry_price = float(close_series.iloc[-1])
-            
-            # محاسبه استاپ و تارگت
-            if ph_price_2 is not None and ph_price_1 is not None:
-                stop_price = max(ph_price_1, ph_price_2) + STOP_BUFFER_PCT * atr14.iloc[-1]
-                mid_trough = low_series.iloc[ph_bar_1+1:ph_bar_2].min() if ph_bar_1 is not None and ph_bar_2 is not None else None
-                if mid_trough is not None and not pd.isna(mid_trough):
-                    target_price = mid_trough
-                    
-                    details = [
-                        f"✅ priceLowerLow and rsiHigherLowOnTroughs",
-                        f"✅ priceLowerLow and macdLineHigherLowOnTroughs",
-                        f"✅ priceLowerLow and histHigherLowOnTroughs and bothTroughsRed and macdColorChangedForLows",
-                        f"✅ trendOkForBullish",
-                        f"✅ fibScoreBullish" if fib_ok else "❌ fibScoreBullish",
-                        f"✅ priceActionBullishAtPivot" if pa_ok else "❌ priceActionBullishAtPivot"
-                    ]
-                    score = 3 + (1 if trend_ok else 0) + (1 if fib_ok else 0) + (1 if pa_ok else 0)
-                    
-                    if score > best_score:
-                        best_signal = "BUY"
-                        best_entry = entry_price
-                        best_stop = stop_price
-                        best_target = target_price
-                        best_emoji = "🟢"
-                        best_label = "Classic Bullish"
-                        best_score = score
-                        best_details = details
-                        best_pivot1 = {'price': pl_price_1, 'rsi': pl_rsi_1, 'macdline': pl_macdline_1, 'hist': pl_hist_1, 'bar': pl_bar_1}
-                        best_pivot2 = {'price': pl_price_2, 'rsi': pl_rsi_2, 'macdline': pl_macdline_2, 'hist': pl_hist_2, 'bar': pl_bar_2}
+        log(f"   🟢 CD+ check | PL1={pl_price_1:.4f} (RSI={pl_rsi_1:.2f}) → PL2={pl_price_2:.4f} (RSI={pl_rsi_2:.2f})")
+        
+        if classic_bullish_base3:
+            if passes_min_requirement(classic_bullish_base3, fib_ok, pa_ok):
+                entry_price = float(close_series.iloc[-1])
+                
+                if ph_price_2 is not None and ph_price_1 is not None:
+                    stop_price = max(ph_price_1, ph_price_2) + STOP_BUFFER_PCT * atr14.iloc[-1]
+                    mid_trough = low_series.iloc[ph_bar_1+1:ph_bar_2].min() if ph_bar_1 is not None and ph_bar_2 is not None else None
+                    if mid_trough is not None and not pd.isna(mid_trough):
+                        target_price = mid_trough
+                        
+                        details = [
+                            f"✅ priceLowerLow and rsiHigherLowOnTroughs",
+                            f"✅ priceLowerLow and macdLineHigherLowOnTroughs",
+                            f"✅ priceLowerLow and histHigherLowOnTroughs and bothTroughsRed and macdColorChangedForLows",
+                            f"✅ trendOkForBullish",
+                            f"✅ fibScoreBullish" if fib_ok else "❌ fibScoreBullish",
+                            f"✅ priceActionBullishAtPivot" if pa_ok else "❌ priceActionBullishAtPivot"
+                        ]
+                        score = 3 + (1 if trend_ok else 0) + (1 if fib_ok else 0) + (1 if pa_ok else 0)
+                        
+                        if score > best_score:
+                            best_signal = "BUY"
+                            best_entry = entry_price
+                            best_stop = stop_price
+                            best_target = target_price
+                            best_emoji = "🟢"
+                            best_label = "Classic Bullish"
+                            best_score = score
+                            best_details = details
+                            best_pivot1 = {'price': pl_price_1, 'rsi': pl_rsi_1, 'macdline': pl_macdline_1, 'hist': pl_hist_1, 'bar': pl_bar_1}
+                            best_pivot2 = {'price': pl_price_2, 'rsi': pl_rsi_2, 'macdline': pl_macdline_2, 'hist': pl_hist_2, 'bar': pl_bar_2}
+        else:
+            log(f"   🟢 CD+ score=0/6")
+            log(f"      {'✅' if rsi_higher_low else '❌'} RSI (rsiHigherLowOnTroughs)")
+            log(f"      {'✅' if macd_higher_low else '❌'} MACD Line (macdLineHigherLowOnTroughs)")
+            log(f"      {'✅' if hist_higher_low and both_troughs_red and macd_color_low else '❌'} MACD Histogram")
+            log(f"      {'✅' if trend_ok else '❌'} Trend (trendOkForBullish)")
+            log(f"      ❌ Base3 برقرار نیست")
     
     # ============================================================
-    # 3. Hidden Bullish — مطابق hiddenBullishBase3 در کد اول
+    # 3. Hidden Bullish — عین کد اول
     # ============================================================
     if new_pivot_low and pl_bar_1 is not None and ENABLE_HIDDEN:
         price_higher_low = pl_price_2 > pl_price_1
@@ -1149,7 +1204,6 @@ def detect_signal(df, state, symbol):
         both_troughs_red = pl_hist_1 < 0 and pl_hist_2 < 0
         macd_color_low = check_color_change(hist_line, pl_bar_1, pl_bar_2, False)
         
-        # برای hidden trend به صورت امتیازی در نظر گرفته می‌شود
         trend_ok = is_trending_up(close_series, pl_bar_1)
         
         fib_ok = False
@@ -1160,45 +1214,53 @@ def detect_signal(df, state, symbol):
         confirm_bar = min(pl_bar_2 + RIGHT_BARS, n - 1)
         pa_ok, _ = check_price_action(closed_df_reset, confirm_bar, "BUY", atr14.iloc[confirm_bar])
         
-        # شرط‌های hiddenBullishBase3
         hidden_bullish_cond1_rsi = price_higher_low and rsi_lower_low
         hidden_bullish_cond2_macdl = price_higher_low and macd_lower_low
         hidden_bullish_cond3_macdh = price_higher_low and hist_lower_low and both_troughs_red and macd_color_low
         hidden_bullish_base3 = ENABLE_HIDDEN and price_higher_low and hidden_bullish_cond3_macdh and hidden_bullish_cond1_rsi and hidden_bullish_cond2_macdl
         
-        if passes_min_requirement(hidden_bullish_base3, fib_ok, pa_ok):
-            entry_price = float(close_series.iloc[-1])
-            
-            if ph_price_2 is not None and ph_price_1 is not None:
-                stop_price = max(ph_price_1, ph_price_2) + STOP_BUFFER_PCT * atr14.iloc[-1]
-                mid_trough = low_series.iloc[ph_bar_1+1:ph_bar_2].min() if ph_bar_1 is not None and ph_bar_2 is not None else None
-                if mid_trough is not None and not pd.isna(mid_trough):
-                    target_price = mid_trough
-                    
-                    details = [
-                        f"✅ priceHigherLow and rsiLowerLowOnTroughs",
-                        f"✅ priceHigherLow and macdLineLowerLowOnTroughs",
-                        f"✅ priceHigherLow and histLowerLowOnTroughs and bothTroughsRed and macdColorChangedForLows",
-                        f"✅ trendOkForBullish" if trend_ok else "❌ trendOkForBullish",
-                        f"✅ fibScoreBullish" if fib_ok else "❌ fibScoreBullish",
-                        f"✅ priceActionBullishAtPivot" if pa_ok else "❌ priceActionBullishAtPivot"
-                    ]
-                    score = 3 + (1 if trend_ok else 0) + (1 if fib_ok else 0) + (1 if pa_ok else 0)
-                    
-                    if score > best_score:
-                        best_signal = "BUY"
-                        best_entry = entry_price
-                        best_stop = stop_price
-                        best_target = target_price
-                        best_emoji = "🔵"
-                        best_label = "Hidden Bullish"
-                        best_score = score
-                        best_details = details
-                        best_pivot1 = {'price': pl_price_1, 'rsi': pl_rsi_1, 'macdline': pl_macdline_1, 'hist': pl_hist_1, 'bar': pl_bar_1}
-                        best_pivot2 = {'price': pl_price_2, 'rsi': pl_rsi_2, 'macdline': pl_macdline_2, 'hist': pl_hist_2, 'bar': pl_bar_2}
+        log(f"   🔵 HD+ check | PL1={pl_price_1:.4f} (RSI={pl_rsi_1:.2f}) → PL2={pl_price_2:.4f} (RSI={pl_rsi_2:.2f})")
+        
+        if hidden_bullish_base3:
+            if passes_min_requirement(hidden_bullish_base3, fib_ok, pa_ok):
+                entry_price = float(close_series.iloc[-1])
+                
+                if ph_price_2 is not None and ph_price_1 is not None:
+                    stop_price = max(ph_price_1, ph_price_2) + STOP_BUFFER_PCT * atr14.iloc[-1]
+                    mid_trough = low_series.iloc[ph_bar_1+1:ph_bar_2].min() if ph_bar_1 is not None and ph_bar_2 is not None else None
+                    if mid_trough is not None and not pd.isna(mid_trough):
+                        target_price = mid_trough
+                        
+                        details = [
+                            f"✅ priceHigherLow and rsiLowerLowOnTroughs",
+                            f"✅ priceHigherLow and macdLineLowerLowOnTroughs",
+                            f"✅ priceHigherLow and histLowerLowOnTroughs and bothTroughsRed and macdColorChangedForLows",
+                            f"✅ trendOkForBullish" if trend_ok else "❌ trendOkForBullish",
+                            f"✅ fibScoreBullish" if fib_ok else "❌ fibScoreBullish",
+                            f"✅ priceActionBullishAtPivot" if pa_ok else "❌ priceActionBullishAtPivot"
+                        ]
+                        score = 3 + (1 if trend_ok else 0) + (1 if fib_ok else 0) + (1 if pa_ok else 0)
+                        
+                        if score > best_score:
+                            best_signal = "BUY"
+                            best_entry = entry_price
+                            best_stop = stop_price
+                            best_target = target_price
+                            best_emoji = "🔵"
+                            best_label = "Hidden Bullish"
+                            best_score = score
+                            best_details = details
+                            best_pivot1 = {'price': pl_price_1, 'rsi': pl_rsi_1, 'macdline': pl_macdline_1, 'hist': pl_hist_1, 'bar': pl_bar_1}
+                            best_pivot2 = {'price': pl_price_2, 'rsi': pl_rsi_2, 'macdline': pl_macdline_2, 'hist': pl_hist_2, 'bar': pl_bar_2}
+        else:
+            log(f"   🔵 HD+ score=0/6")
+            log(f"      {'✅' if rsi_lower_low else '❌'} RSI (rsiLowerLowOnTroughs)")
+            log(f"      {'✅' if macd_lower_low else '❌'} MACD Line (macdLineLowerLowOnTroughs)")
+            log(f"      {'✅' if hist_lower_low and both_troughs_red and macd_color_low else '❌'} MACD Histogram")
+            log(f"      ❌ Base3 برقرار نیست")
     
     # ============================================================
-    # 4. Hidden Bearish — مطابق hiddenBearishBase3 در کد اول
+    # 4. Hidden Bearish — عین کد اول
     # ============================================================
     if new_pivot_high and ph_bar_1 is not None and ENABLE_HIDDEN:
         price_lower_high = ph_price_2 < ph_price_1
@@ -1218,47 +1280,103 @@ def detect_signal(df, state, symbol):
         confirm_bar = min(ph_bar_2 + RIGHT_BARS, n - 1)
         pa_ok, _ = check_price_action(closed_df_reset, confirm_bar, "SELL", atr14.iloc[confirm_bar])
         
-        # شرط‌های hiddenBearishBase3
         hidden_bearish_cond1_rsi = price_lower_high and rsi_higher_high
         hidden_bearish_cond2_macdl = price_lower_high and macd_higher_high
         hidden_bearish_cond3_macdh = price_lower_high and hist_higher_high and both_peaks_green and macd_color_high
         hidden_bearish_base3 = ENABLE_HIDDEN and price_lower_high and hidden_bearish_cond3_macdh and hidden_bearish_cond1_rsi and hidden_bearish_cond2_macdl
         
-        if passes_min_requirement(hidden_bearish_base3, fib_ok, pa_ok):
-            entry_price = float(close_series.iloc[-1])
-            
-            if pl_price_2 is not None and pl_price_1 is not None:
-                stop_price = min(pl_price_1, pl_price_2) - STOP_BUFFER_PCT * atr14.iloc[-1]
-                mid_peak = high_series.iloc[pl_bar_1+1:pl_bar_2].max() if pl_bar_1 is not None and pl_bar_2 is not None else None
-                if mid_peak is not None and not pd.isna(mid_peak):
-                    target_price = mid_peak
-                    
-                    details = [
-                        f"✅ priceLowerHigh and rsiHigherHighOnPeaks",
-                        f"✅ priceLowerHigh and macdLineHigherHighOnPeaks",
-                        f"✅ priceLowerHigh and histHigherHighOnPeaks and bothPeaksGreen and macdColorChangedForHighs",
-                        f"✅ trendOkForBearish" if trend_ok else "❌ trendOkForBearish",
-                        f"✅ fibScoreBearish" if fib_ok else "❌ fibScoreBearish",
-                        f"✅ priceActionBearishAtPivot" if pa_ok else "❌ priceActionBearishAtPivot"
-                    ]
-                    score = 3 + (1 if trend_ok else 0) + (1 if fib_ok else 0) + (1 if pa_ok else 0)
-                    
-                    if score > best_score:
-                        best_signal = "SELL"
-                        best_entry = entry_price
-                        best_stop = stop_price
-                        best_target = target_price
-                        best_emoji = "🟠"
-                        best_label = "Hidden Bearish"
-                        best_score = score
-                        best_details = details
-                        best_pivot1 = {'price': ph_price_1, 'rsi': ph_rsi_1, 'macdline': ph_macdline_1, 'hist': ph_hist_1, 'bar': ph_bar_1}
-                        best_pivot2 = {'price': ph_price_2, 'rsi': ph_rsi_2, 'macdline': ph_macdline_2, 'hist': ph_hist_2, 'bar': ph_bar_2}
+        log(f"   🟠 HD- check | PH1={ph_price_1:.4f} (RSI={ph_rsi_1:.2f}) → PH2={ph_price_2:.4f} (RSI={ph_rsi_2:.2f})")
+        
+        if hidden_bearish_base3:
+            if passes_min_requirement(hidden_bearish_base3, fib_ok, pa_ok):
+                entry_price = float(close_series.iloc[-1])
+                
+                if pl_price_2 is not None and pl_price_1 is not None:
+                    stop_price = min(pl_price_1, pl_price_2) - STOP_BUFFER_PCT * atr14.iloc[-1]
+                    mid_peak = high_series.iloc[pl_bar_1+1:pl_bar_2].max() if pl_bar_1 is not None and pl_bar_2 is not None else None
+                    if mid_peak is not None and not pd.isna(mid_peak):
+                        target_price = mid_peak
+                        
+                        details = [
+                            f"✅ priceLowerHigh and rsiHigherHighOnPeaks",
+                            f"✅ priceLowerHigh and macdLineHigherHighOnPeaks",
+                            f"✅ priceLowerHigh and histHigherHighOnPeaks and bothPeaksGreen and macdColorChangedForHighs",
+                            f"✅ trendOkForBearish" if trend_ok else "❌ trendOkForBearish",
+                            f"✅ fibScoreBearish" if fib_ok else "❌ fibScoreBearish",
+                            f"✅ priceActionBearishAtPivot" if pa_ok else "❌ priceActionBearishAtPivot"
+                        ]
+                        score = 3 + (1 if trend_ok else 0) + (1 if fib_ok else 0) + (1 if pa_ok else 0)
+                        
+                        if score > best_score:
+                            best_signal = "SELL"
+                            best_entry = entry_price
+                            best_stop = stop_price
+                            best_target = target_price
+                            best_emoji = "🟠"
+                            best_label = "Hidden Bearish"
+                            best_score = score
+                            best_details = details
+                            best_pivot1 = {'price': ph_price_1, 'rsi': ph_rsi_1, 'macdline': ph_macdline_1, 'hist': ph_hist_1, 'bar': ph_bar_1}
+                            best_pivot2 = {'price': ph_price_2, 'rsi': ph_rsi_2, 'macdline': ph_macdline_2, 'hist': ph_hist_2, 'bar': ph_bar_2}
+        else:
+            log(f"   🟠 HD- score=0/6")
+            log(f"      {'✅' if rsi_higher_high else '❌'} RSI (rsiHigherHighOnPeaks)")
+            log(f"      {'✅' if macd_higher_high else '❌'} MACD Line (macdLineHigherHighOnPeaks)")
+            log(f"      {'✅' if hist_higher_high and both_peaks_green and macd_color_high else '❌'} MACD Histogram")
+            log(f"      ❌ Base3 برقرار نیست")
     
     # ============================================================
-    # ذخیره وضعیت و بازگشت نتیجه
+    # لاگ نهایی و ذخیره
     # ============================================================
     save_states()
+    
+    if best_signal is None:
+        log(f"   ⚪ No signal (none passed Base3)")
+        
+        log(f"   ======================================================================")
+        log(f"   🔬 FULL DEBUG LOG (Pine-Exact Pivot + Base3 Gating v2.0)")
+        log(f"   ======================================================================")
+        log(f"   📊 GENERAL:")
+        log(f"      Symbol: {symbol}")
+        log(f"      Time: {format_iran_time()}")
+        log(f"      Total Candles (n): {n}")
+        log(f"      New Pivot Highs: {1 if new_pivot_high else 0}")
+        log(f"      New Pivot Lows: {1 if new_pivot_low else 0}")
+        log(f"      Total Pivot Highs (mem): {len([x for x in [ph_price_2, ph_price_1] if x is not None])}")
+        log(f"      Total Pivot Lows (mem): {len([x for x in [pl_price_2, pl_price_1] if x is not None])}")
+        log(f"")
+        log(f"   📈 CURRENT INDICATORS:")
+        log(f"      Entry Price: {close_series.iloc[-1]:.4f}")
+        log(f"      RSI(14)[-1]: {rsi_val.iloc[-1]:.2f}")
+        log(f"      MACD Line[-1]: {macd_line.iloc[-1]:.6f}")
+        log(f"      MACD Hist[-1]: {hist_line.iloc[-1]:.6f}")
+        log(f"      ATR(14)[-1]: {atr14.iloc[-1]:.4f}")
+        log(f"")
+        log(f"   🏁 FINAL RESULT:")
+        log(f"      ❌ NO SIGNAL")
+        log(f"   ======================================================================")
+    
+    save_debug_log_to_file(symbol, debug_file_lines)
+    
+    if not hasattr(detect_signal, "_debug_count"):
+        detect_signal._debug_count = 0
+    
+    if detect_signal._debug_count < 5 and best_signal is None:
+        summary_log = []
+        summary_log.append(f"🟢 لاگ #{detect_signal._debug_count + 1} — {symbol} {HASHTAGS['log']}")
+        summary_log.append("━━━━━━━━━━━━━━━━━━━━━━")
+        for line in debug_log:
+            if line.startswith("🔍") or line.startswith("   n=") or line.startswith("   new_high") or \
+               line.startswith("   🔴") or line.startswith("   🟢") or line.startswith("   🔵") or line.startswith("   🟠") or \
+               line.startswith("   ⚪") or line.startswith("   ==") or line.startswith("   📊") or \
+               line.startswith("   📈") or line.startswith("   🏁") or line.startswith("      ❌") or \
+               line.startswith("      ✅"):
+                summary_log.append(line)
+        summary_log.append("━━━━━━━━━━━━━━━━━━━━━━")
+        summary_log.append(f"🕒 {format_iran_time()}")
+        
+        send_telegram_message("\n".join(summary_log))
+        detect_signal._debug_count += 1
     
     if best_signal is not None and best_stop is not None and best_target is not None:
         return (best_signal, best_entry, best_stop, best_target, early_signal, 
@@ -1267,56 +1385,162 @@ def detect_signal(df, state, symbol):
     return None, None, None, None, early_signal, None, None, 0, [], None, None
 
 # =====================================================================================
-# توابع مدیریت تاریخچه و گزارش
+# ======================== توابع گزارش‌گیری =========================================
 # =====================================================================================
 
-def load_history():
-    if os.path.exists(HISTORY_FILE):
-        try:
-            with open(HISTORY_FILE) as f:
-                return json.load(f)
-        except:
-            return []
-    return []
+def generate_daily_report_text(trades):
+    today_str = format_iran_date()
+    if not trades:
+        return None
+    total_trades = len(trades)
+    total_realized_pnl = sum(float(t.get('realized_pnl', 0)) for t in trades)
+    wins = len([t for t in trades if float(t.get('realized_pnl', 0)) > 0])
+    losses = len([t for t in trades if float(t.get('realized_pnl', 0)) < 0])
+    win_rate = (wins / (wins + losses) * 100) if (wins + losses) > 0 else 0
+    message = f"""📊 گزارش روزانه — {today_str} {HASHTAGS['daily']}
+━━━━━━━━━━━━━━━━━━━━━━
+📈 کل معاملات بسته شده: {total_trades} عدد
+✅ سودآور: {wins} ({win_rate:.1f}%)
+❌ ضررده: {losses}
+💰 سود/زیان خالص: {total_realized_pnl:.2f} USDT
+📊 نرخ موفقیت: {win_rate:.1f}%
+💪 وضعیت: {'عالی! 🚀' if total_realized_pnl > 0 else 'نیاز به بررسی 📊'}
+━━━━━━━━━━━━━━━━━━━━━━
+🕒 {format_iran_time()}"""
+    return message
 
-def save_history(h):
-    with open(HISTORY_FILE, 'w') as f:
-        json.dump(h, f, indent=2)
+def generate_monthly_report_text(trades):
+    if not trades:
+        return None
+    total_trades = len(trades)
+    total_realized_pnl = sum(float(t.get('realized_pnl', 0)) for t in trades)
+    wins = len([t for t in trades if float(t.get('realized_pnl', 0)) > 0])
+    losses = len([t for t in trades if float(t.get('realized_pnl', 0)) < 0])
+    win_rate = (wins / (wins + losses) * 100) if (wins + losses) > 0 else 0
+    message = f"""📈 گزارش ۳۰ روز گذشته {HASHTAGS['monthly']}
+━━━━━━━━━━━━━━━━━━━━━━
+📊 کل معاملات: {total_trades} عدد
+✅ سودآور: {wins} ({win_rate:.1f}%)
+❌ ضررده: {losses}
+💰 سود/زیان خالص: {total_realized_pnl:.2f} USDT
+📈 نرخ موفقیت: {win_rate:.1f}%
+💪 ارزیابی: {'پروژه موفق! 🎉' if total_realized_pnl > 0 else 'نیاز به بهینه‌سازی ⚙️'}
+━━━━━━━━━━━━━━━━━━━━━━
+🕒 {format_iran_time()}"""
+    return message
 
-def get_next_signal_number():
-    global SIGNAL_COUNTER
-    SIGNAL_COUNTER += 1
-    return SIGNAL_COUNTER
-
-def load_signal_counter():
-    global SIGNAL_COUNTER
-    history = load_history()
-    if history:
-        SIGNAL_COUNTER = len(history)
-    else:
-        SIGNAL_COUNTER = 0
-
-def send_telegram_message(message: str):
+def send_reports():
     try:
-        url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-        response = requests.post(url, json={"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": "Markdown"}, timeout=30)
-        if response.status_code != 200:
-            logger.error(f"[TELEGRAM] Status: {response.status_code}, Response: {response.text[:200]}")
+        today_str = format_iran_date()
+        history = load_history()
+        today_trades = [t for t in history if t.get('signal_time', '').startswith(today_str)]
+        if today_trades:
+            total = len(today_trades)
+            wins = len([t for t in today_trades if t.get('result') == 'TAKE_PROFIT'])
+            losses = len([t for t in today_trades if t.get('result') == 'STOP_LOSS'])
+            closed = wins + losses
+            win_rate = (wins / closed * 100) if closed > 0 else 0
+            total_pnl = sum([t.get('realized_pnl', 0) for t in today_trades if t.get('result') is not None])
+            
+            daily_msg = f"""📊 گزارش روزانه (محلی) — {today_str} {HASHTAGS['daily']}
+━━━━━━━━━━━━━━━━━━━━━━
+📈 کل معاملات: {total} عدد
+✅ موفق: {wins} ({win_rate:.1f}%)
+❌ ناموفق: {losses}
+💰 سود/زیان خالص: {total_pnl:.2f} USDT
+📊 نرخ موفقیت: {win_rate:.1f}%
+━━━━━━━━━━━━━━━━━━━━━━
+🕒 {format_iran_time()}"""
+            send_telegram_message(daily_msg)
+            logger.info("[REPORT] Local daily report sent.")
     except Exception as e:
-        logger.error(f"[TELEGRAM] Error: {e}")
-
-def format_iran_time(dt=None):
-    if dt is None:
-        dt = datetime.now(timezone(timedelta(hours=3, minutes=30)))
-    return dt.strftime('%Y-%m-%d %H:%M:%S')
-
-def format_iran_date(dt=None):
-    if dt is None:
-        dt = datetime.now(timezone(timedelta(hours=3, minutes=30)))
-    return dt.strftime('%Y-%m-%d')
+        logger.error(f"[REPORT ERROR] Local daily: {e}")
+    
+    try:
+        history = load_history()
+        if history:
+            monthly_msg = generate_monthly_report_text(history)
+            if monthly_msg:
+                send_telegram_message(monthly_msg)
+                logger.info("[REPORT] Monthly report sent.")
+    except Exception as e:
+        logger.error(f"[REPORT ERROR] Monthly: {e}")
 
 # =====================================================================================
-# تابع اجرای اصلی
+# ======================== Startup Diagnostic =========================================
+# =====================================================================================
+
+def run_startup_diagnostic():
+    logger.info("Running Startup Diagnostic...")
+    diagnostic_log = []
+    diagnostic_log.append(f"🔍 بررسی سلامت سیستم {HASHTAGS['diagnostic']}")
+    diagnostic_log.append("━━━━━━━━━━━━━━━━━━━━━━")
+    try:
+        requests.get("https://www.google.com", timeout=5)
+        diagnostic_log.append("🟢 اتصال اینترنت")
+    except:
+        diagnostic_log.append("🔴 اتصال اینترنت")
+    
+    public_data = TrueTradePublicData()
+    df = None
+    try:
+        df = public_data.fetch_ohlcv("LTCUSDT", "1m", HISTORY_BARS)
+        if df is not None and not df.empty:
+            diagnostic_log.append(f"🟢 دریافت داده: {len(df)} کندل")
+        else:
+            diagnostic_log.append("🔴 دریافت داده")
+    except Exception as e:
+        diagnostic_log.append(f"🔴 دریافت داده: {str(e)[:50]}")
+    
+    try:
+        if df is not None and not df.empty:
+            rsi = calc_rsi(df['close'], 14)
+            diagnostic_log.append(f"🟢 RSI(14): {rsi.iloc[-1]:.2f}")
+            diagnostic_log.append("🟢 MACD(12,26,9): فعال")
+            atr = calc_atr(df['high'], df['low'], df['close'], 14)
+            diagnostic_log.append(f"🟢 ATR(14): {atr.iloc[-1]:.4f}")
+            ph = find_pivot_high(df['high'], 5, 3)
+            pl = find_pivot_low(df['low'], 5, 3)
+            diagnostic_log.append(f"🟢 Pivot High(5,3): {ph.notna().sum()} عدد")
+            diagnostic_log.append(f"🟢 Pivot Low(5,3): {pl.notna().sum()} عدد")
+            diagnostic_log.append("🟢 تشخیص روند: فعال")
+    except Exception as e:
+        diagnostic_log.append(f"🔴 خطا: {str(e)[:50]}")
+    
+    diagnostic_log.append(f"🟢 پارامترهای استراتژی (مطابق کد اول):")
+    diagnostic_log.append(f"   • PIVOT_MODE: {PIVOT_MODE}")
+    diagnostic_log.append(f"   • RSI_LEN: {RSI_LEN}")
+    diagnostic_log.append(f"   • MACD: {MACD_FAST}/{MACD_SLOW}/{MACD_SIG}")
+    diagnostic_log.append(f"   • TREND_LOOKBACK: {TREND_LOOKBACK}")
+    diagnostic_log.append(f"   • TREND_SLOPE_MIN_PCT: {TREND_SLOPE_MIN_PCT}%")
+    diagnostic_log.append(f"   • MIN_CONFIRMATIONS: {MIN_CONFIRMATIONS}")
+    diagnostic_log.append(f"   • ENABLE_HIDDEN: {ENABLE_HIDDEN}")
+    diagnostic_log.append(f"   • FIB_USE_618: {FIB_USE_618}")
+    diagnostic_log.append(f"   • FIB_USE_786: {FIB_USE_786}")
+    diagnostic_log.append(f"   • FIB_TOLERANCE_PCT: {FIB_TOLERANCE_PCT}%")
+    diagnostic_log.append(f"   • FIB_SEARCH_BARS: {FIB_TREND_SEARCH_BARS}")
+    
+    diagnostic_log.append("🟢 موتور امتیازدهی: Base3 + Trend/Fib/PA")
+    diagnostic_log.append("🟢 اتصال به تلگرام")
+    
+    exchange = TrueTradePrivateExchange(API_KEY, API_SECRET, BASE_URL)
+    conn = exchange.test_connection()
+    if conn:
+        diagnostic_log.append("🟢 اتصال به صرافی: برقرار")
+        balance = exchange.fetch_balance()
+        if balance:
+            diagnostic_log.append(f"🟢 موجودی: {balance:.2f} USDT")
+    else:
+        diagnostic_log.append("🔴 اتصال به صرافی: قطع")
+    
+    diagnostic_log.append("\n━━━━━━━━━━━━━━━━━━━━━━")
+    diagnostic_log.append("✅ تمام بخش‌ها فعال هستند" if conn else "⚠️ برخی بخش‌ها غیرفعال هستند")
+    diagnostic_log.append(f"🕒 {format_iran_time()}")
+    send_telegram_message("\n".join(diagnostic_log))
+    logger.info("Startup Diagnostic Complete")
+
+# =====================================================================================
+# ======================== تابع اجرای اصلی ===========================================
 # =====================================================================================
 
 def analyze_and_execute():
@@ -1391,10 +1615,10 @@ def analyze_and_execute():
                 qty = (capital * used_leverage) / entry
                 potential_profit = capital * used_leverage * (profit_pct / 100)
 
-                signal_type = "CD+" if signal == "BUY" and label == "Classic Bullish" else "HD+" if signal == "BUY" else "CD-" if label == "Classic Bearish" else "HD-"
+                signal_type = "CD+" if signal == "BUY" and "Classic" in label else "HD+" if signal == "BUY" else "CD-" if "Classic" in label else "HD-"
                 
-                pivot1_info = f"Pivot اول: قیمت {pivot1['price']:.4f} @ کندل {pivot1['bar']}" if pivot1 else "Pivot اول: نامشخص"
-                pivot2_info = f"Pivot دوم: قیمت {pivot2['price']:.4f} @ کندل {pivot2['bar']}" if pivot2 else "Pivot دوم: نامشخص"
+                pivot1_info = f"Pivot اول: قیمت {pivot1['price']:.4f} @ کندل {pivot1['bar']} (RSI={pivot1['rsi']:.2f})" if pivot1 else "Pivot اول: نامشخص"
+                pivot2_info = f"Pivot دوم: قیمت {pivot2['price']:.4f} @ کندل {pivot2['bar']} (RSI={pivot2['rsi']:.2f})" if pivot2 else "Pivot دوم: نامشخص"
                 
                 signal_message = (
                     f"{emoji} {signal_type} — {symbol} {HASHTAGS['signal']} #Signal_{signal_number}\n"
@@ -1436,8 +1660,10 @@ def analyze_and_execute():
                             'position_id': position_id,
                             'pivot1_bar': pivot1['bar'] if pivot1 else None,
                             'pivot1_price': pivot1['price'] if pivot1 else None,
+                            'pivot1_rsi': pivot1['rsi'] if pivot1 else None,
                             'pivot2_bar': pivot2['bar'] if pivot2 else None,
-                            'pivot2_price': pivot2['price'] if pivot2 else None
+                            'pivot2_price': pivot2['price'] if pivot2 else None,
+                            'pivot2_rsi': pivot2['rsi'] if pivot2 else None
                         })
                         save_history(history)
 
@@ -1467,14 +1693,25 @@ def analyze_and_execute():
     save_states()
 
 # =====================================================================================
-# حلقه اصلی
+# ======================== حلقه اصلی =================================================
 # =====================================================================================
 
 def main_loop():
+    last_daily_report_date = None
+    
     while True:
         try:
             logger.info(f"[LOOP] {format_iran_time()}")
             analyze_and_execute()
+            
+            today = format_iran_date()
+            if last_daily_report_date != today:
+                try:
+                    send_reports()
+                    last_daily_report_date = today
+                except Exception as e:
+                    logger.error(f"[REPORT ERROR] {e}")
+            
             time.sleep(60)
         except Exception as e:
             logger.error(f"[LOOP] {e}")
@@ -1493,14 +1730,26 @@ if __name__ == "__main__":
 
     send_telegram_message(
         f"🤖 DTM Divergence Light — آنلاین {HASHTAGS['startup']}\n\n"
-        f"🧠 منطق کاملاً مطابق با dtm(1).py (Pine Script)\n"
-        f"📊 Pivot: 5/3 (سریع)\n"
+        f"🧠 منطق کاملاً عین dtm(1).py (Pine Script)\n"
+        f"📊 Pivot: {PIVOT_MODE} ({LEFT_BARS}/{RIGHT_BARS})\n"
         f"⚙️ Base3: RSI + MACD Line + MACD Histogram (اجباری)\n"
         f"⚙️ Trend + Fibonacci + Price Action (امتیازی)\n"
         f"⚙️ همه ۴ نوع واگرایی: Classic/Hidden + BUY/SELL\n"
+        f"⚙️ MIN_CONFIRMATIONS: {MIN_CONFIRMATIONS}\n"
         f"🔧 ETH=50x | LTC/DOGE=75x\n\n"
+        f"📊 پارامترهای استراتژی:\n"
+        f"   • RSI_LEN: {RSI_LEN}\n"
+        f"   • MACD: {MACD_FAST}/{MACD_SLOW}/{MACD_SIG}\n"
+        f"   • TREND_LOOKBACK: {TREND_LOOKBACK}\n"
+        f"   • TREND_SLOPE_MIN_PCT: {TREND_SLOPE_MIN_PCT}%\n"
+        f"   • FIB_USE_618: {FIB_USE_618}\n"
+        f"   • FIB_USE_786: {FIB_USE_786}\n"
+        f"   • FIB_TOLERANCE_PCT: {FIB_TOLERANCE_PCT}%\n"
+        f"   • ENABLE_HIDDEN: {ENABLE_HIDDEN}\n\n"
         f"🕒 {format_iran_time()}"
     )
+    
+    run_startup_diagnostic()
     
     threading.Thread(target=lambda: app.run(host="0.0.0.0", port=10000), daemon=True).start()
     logger.info("[STARTUP] Flask روی پورت 10000")
