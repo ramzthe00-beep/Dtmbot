@@ -134,7 +134,7 @@ BIG_CANDLE_MULTIPLIER = 1.5
 
 API_RETURNS_OPEN_CANDLE = False
 
-HISTORY_BARS = 1000
+HISTORY_BARS = 100
 
 # =====================================================================================
 # Tick Size و Price Precision
