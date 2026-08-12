@@ -137,7 +137,7 @@ BIG_CANDLE_MULTIPLIER = 1.5
 
 API_RETURNS_OPEN_CANDLE = False
 
-HISTORY_BARS = 5000
+HISTORY_BARS = 500
 
 # =====================================================================================
 # Multi-Pivot Comparison Settings (کاهش برای سرعت بهتر)
