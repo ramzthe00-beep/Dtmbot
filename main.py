@@ -116,7 +116,7 @@ PRICE_PRECISION = {
 }
 
 # =====================================================================================
-# کلاس دریافت داده (با کش پیوسته)
+# کلاس دریافت داده (با کش پیوسته - CSV به جای parquet)
 # =====================================================================================
 class TrueTradePublicData:
     def __init__(self):
@@ -126,14 +126,14 @@ class TrueTradePublicData:
         self._load_cached_data()
 
     def _get_cache_file(self, symbol):
-        return os.path.join(CACHE_DIR, f"{symbol.lower()}_1m.parquet")
+        return os.path.join(CACHE_DIR, f"{symbol.lower()}_1m.csv")
 
     def _load_cached_data(self):
         for symbol in SYMBOLS:
             cache_file = self._get_cache_file(symbol)
             if os.path.exists(cache_file):
                 try:
-                    df = pd.read_parquet(cache_file)
+                    df = pd.read_csv(cache_file, index_col=0, parse_dates=True)
                     if not df.empty:
                         if df.index.tz is None:
                             df.index = df.index.tz_localize('UTC')
@@ -147,7 +147,7 @@ class TrueTradePublicData:
     def _save_cached_data(self, symbol):
         if symbol in self._data_cache:
             try:
-                self._data_cache[symbol].to_parquet(self._get_cache_file(symbol))
+                self._data_cache[symbol].to_csv(self._get_cache_file(symbol))
             except Exception as e:
                 logger.error(f"[CACHE] Error saving {symbol}: {e}")
 
@@ -615,7 +615,6 @@ def calc_linreg(series, length, offset=0):
         y = series.iloc[i - length + 1: i + 1].values
         x = np.arange(length)
         slope, intercept = np.polyfit(x, y, 1)
-        # مقدار در offset آینده (مثل Pine: linreg(source, length, offset))
         result.iloc[i] = intercept + slope * (length - 1 + offset)
     return result
 
@@ -630,24 +629,6 @@ def calc_lowest(series, length):
 def calc_highest(series, length):
     """معادل ta.highest در Pine Script"""
     return series.rolling(window=length).max()
-
-def calc_valuewhen(condition, source, occurrence=0):
-    """
-    معادل ta.valuewhen در Pine Script
-    مقادیر source را در نقاطی که condition برقرار است برمی‌گرداند
-    """
-    result = pd.Series(np.nan, index=condition.index)
-    last_value = np.nan
-    occurrences = []
-    
-    for i in range(len(condition)):
-        if condition.iloc[i]:
-            occurrences.append(source.iloc[i])
-            if len(occurrences) > occurrence:
-                last_value = occurrences[-1 - occurrence]
-        result.iloc[i] = last_value
-    
-    return result
 
 def find_pivot_high(high, left_bars=LEFT_BARS, right_bars=RIGHT_BARS):
     """معادل ta.pivothigh در Pine Script"""
@@ -705,16 +686,14 @@ def find_pivot_low(low, left_bars=LEFT_BARS, right_bars=RIGHT_BARS):
             
     return result
 
-def check_color_change(hist_series, bar_start_ts, bar_end_ts, need_red_phase, current_ts=None):
+def check_color_change(hist_series, bar_start_ts, bar_end_ts, need_red_phase):
     """
     معادل checkColorChange در PyneCore
-    منطق: از barEnd-1 تا barStart+1 بررسی می‌کند
+    منطق: از barStart+1 تا barEnd-1 بررسی می‌کند
     """
     found = False
     if bar_start_ts is not None and bar_end_ts is not None and bar_end_ts > bar_start_ts:
         try:
-            # در Pine: startOffset = bar_index - (barEnd - 1), endOffset = bar_index - (barStart + 1)
-            # یعنی از کندل بعد از barStart تا کندل قبل از barEnd
             start_pos = hist_series.index.get_loc(bar_start_ts)
             end_pos = hist_series.index.get_loc(bar_end_ts)
             
@@ -742,20 +721,22 @@ def is_trending_up(close_series, ref_ts):
     if ref_ts is not None:
         try:
             offset = close_series.index.get_loc(ref_ts)
-            if offset >= 0 and offset + TREND_LOOKBACK < len(close_series):
-                # محاسبه slope با linreg مثل Pine
-                linreg_current = calc_linreg(close_series.iloc[offset:], TREND_LOOKBACK, 0)
-                linreg_past = calc_linreg(close_series.iloc[offset + TREND_LOOKBACK:], TREND_LOOKBACK, 0)
+            if offset >= 0 and offset + TREND_LOOKBACK * 2 < len(close_series):
+                # linreg روی close[offset] با length=trendLookback
+                y_current = close_series.iloc[offset:offset + TREND_LOOKBACK].values
+                x = np.arange(TREND_LOOKBACK)
+                slope_current, intercept_current = np.polyfit(x, y_current, 1)
+                linreg_current = intercept_current + slope_current * (TREND_LOOKBACK - 1)
                 
-                if len(linreg_current) > 0 and len(linreg_past) > 0:
-                    slope_current = linreg_current.iloc[-1]
-                    slope_past = linreg_past.iloc[0] if len(linreg_past) > 0 else np.nan
-                    
-                    if not pd.isna(slope_current) and not pd.isna(slope_past):
-                        slope = slope_current - slope_past
-                        avg_price = calc_sma(close_series.iloc[offset:], TREND_LOOKBACK).iloc[-1]
-                        slope_pct = (slope / avg_price) * 100 if avg_price != 0 else 0.0
-                        result = slope_pct > TREND_SLOPE_MIN_PCT
+                # linreg روی close[offset + trendLookback] با length=trendLookback
+                y_past = close_series.iloc[offset + TREND_LOOKBACK:offset + 2 * TREND_LOOKBACK].values
+                slope_past, intercept_past = np.polyfit(x, y_past, 1)
+                linreg_past = intercept_past + slope_past * (TREND_LOOKBACK - 1)
+                
+                slope = linreg_current - linreg_past
+                avg_price = close_series.iloc[offset:offset + TREND_LOOKBACK].mean()
+                slope_pct = (slope / avg_price) * 100 if avg_price != 0 else 0.0
+                result = slope_pct > TREND_SLOPE_MIN_PCT
         except (KeyError, IndexError):
             pass
     return result
@@ -768,19 +749,20 @@ def is_trending_down(close_series, ref_ts):
     if ref_ts is not None:
         try:
             offset = close_series.index.get_loc(ref_ts)
-            if offset >= 0 and offset + TREND_LOOKBACK < len(close_series):
-                linreg_current = calc_linreg(close_series.iloc[offset:], TREND_LOOKBACK, 0)
-                linreg_past = calc_linreg(close_series.iloc[offset + TREND_LOOKBACK:], TREND_LOOKBACK, 0)
+            if offset >= 0 and offset + TREND_LOOKBACK * 2 < len(close_series):
+                y_current = close_series.iloc[offset:offset + TREND_LOOKBACK].values
+                x = np.arange(TREND_LOOKBACK)
+                slope_current, intercept_current = np.polyfit(x, y_current, 1)
+                linreg_current = intercept_current + slope_current * (TREND_LOOKBACK - 1)
                 
-                if len(linreg_current) > 0 and len(linreg_past) > 0:
-                    slope_current = linreg_current.iloc[-1]
-                    slope_past = linreg_past.iloc[0] if len(linreg_past) > 0 else np.nan
-                    
-                    if not pd.isna(slope_current) and not pd.isna(slope_past):
-                        slope = slope_current - slope_past
-                        avg_price = calc_sma(close_series.iloc[offset:], TREND_LOOKBACK).iloc[-1]
-                        slope_pct = (slope / avg_price) * 100 if avg_price != 0 else 0.0
-                        result = slope_pct < -TREND_SLOPE_MIN_PCT
+                y_past = close_series.iloc[offset + TREND_LOOKBACK:offset + 2 * TREND_LOOKBACK].values
+                slope_past, intercept_past = np.polyfit(x, y_past, 1)
+                linreg_past = intercept_past + slope_past * (TREND_LOOKBACK - 1)
+                
+                slope = linreg_current - linreg_past
+                avg_price = close_series.iloc[offset:offset + TREND_LOOKBACK].mean()
+                slope_pct = (slope / avg_price) * 100 if avg_price != 0 else 0.0
+                result = slope_pct < -TREND_SLOPE_MIN_PCT
         except (KeyError, IndexError):
             pass
     return result
@@ -794,11 +776,9 @@ def find_trend_start_low(low_series, ref_ts):
         try:
             offset = low_series.index.get_loc(ref_ts)
             if offset >= 0 and offset + FIB_TREND_SEARCH_BARS < len(low_series):
-                lowest = calc_lowest(low_series.iloc[offset:], FIB_TREND_SEARCH_BARS)
-                if len(lowest) > 0:
-                    result = lowest.iloc[-1]
-                    if pd.isna(result):
-                        result = None
+                result = low_series.iloc[offset:offset + FIB_TREND_SEARCH_BARS].min()
+                if pd.isna(result):
+                    result = None
         except (KeyError, IndexError):
             pass
     return result
@@ -812,11 +792,9 @@ def find_trend_start_high(high_series, ref_ts):
         try:
             offset = high_series.index.get_loc(ref_ts)
             if offset >= 0 and offset + FIB_TREND_SEARCH_BARS < len(high_series):
-                highest = calc_highest(high_series.iloc[offset:], FIB_TREND_SEARCH_BARS)
-                if len(highest) > 0:
-                    result = highest.iloc[-1]
-                    if pd.isna(result):
-                        result = None
+                result = high_series.iloc[offset:offset + FIB_TREND_SEARCH_BARS].max()
+                if pd.isna(result):
+                    result = None
         except (KeyError, IndexError):
             pass
     return result
@@ -854,7 +832,6 @@ def passes_min_requirement(base3, fib_ok, pa_ok):
 def calc_price_action(df, atr_series):
     """
     معادل محاسبات Price Action در PyneCore
-    کل سری را محاسبه می‌کند
     """
     candle_range = df['high'] - df['low']
     candle_body = (df['close'] - df['open']).abs()
@@ -1049,21 +1026,13 @@ def detect_signal(df, state, symbol):
     macd_line, signal_line, hist_line = calc_macd(close_series, MACD_FAST, MACD_SLOW, MACD_SIG)
     atr14 = calc_atr(high_series, low_series, close_series, 14)
     
-    # محاسبه pivot‌ها
+    # محاسبه pivotها
     pivot_high = find_pivot_high(high_series, LEFT_BARS, RIGHT_BARS)
     pivot_low = find_pivot_low(low_series, LEFT_BARS, RIGHT_BARS)
     
-    # معادل ta.valuewhen در Pine
-    rsi_at_pivot_high = calc_valuewhen(~pivot_high.isna(), rsi_val.shift(RIGHT_BARS), 0)
-    rsi_at_pivot_low = calc_valuewhen(~pivot_low.isna(), rsi_val.shift(RIGHT_BARS), 0)
-    macdline_at_pivot_high = calc_valuewhen(~pivot_high.isna(), macd_line.shift(RIGHT_BARS), 0)
-    macdline_at_pivot_low = calc_valuewhen(~pivot_low.isna(), macd_line.shift(RIGHT_BARS), 0)
-    hist_at_pivot_high = calc_valuewhen(~pivot_high.isna(), hist_line.shift(RIGHT_BARS), 0)
-    hist_at_pivot_low = calc_valuewhen(~pivot_low.isna(), hist_line.shift(RIGHT_BARS), 0)
-    
     # آخرین کندل تأیید شده
-    last_confirmed_ts = closed_df.index[n - 1 - RIGHT_BARS]
     last_confirmed_pos = n - 1 - RIGHT_BARS
+    last_confirmed_ts = closed_df.index[last_confirmed_pos]
     
     # بازیابی state
     ph_price_2 = state.ph_price_2
@@ -1092,6 +1061,8 @@ def detect_signal(df, state, symbol):
     new_pivot_low = False
     
     # تشخیص پیوت جدید مطابق PyneCore
+    # در Pine: ta.pivothigh مقدار را در کندل i+rightBars قرار میدهد
+    # پس pivotHighPrice در last_confirmed_pos یعنی پیوت واقعی در last_confirmed_pos - rightBars
     if not pd.isna(pivot_high.iloc[last_confirmed_pos]):
         ph_price_1 = ph_price_2
         ph_ts_1 = ph_ts_2
@@ -1099,15 +1070,16 @@ def detect_signal(df, state, symbol):
         ph_macdline_1 = ph_macdline_2
         ph_hist_1 = ph_hist_2
         
-        # bar_index - rightBars → timestamp
+        # bar_index - rightBars → موقعیت واقعی پیوت
         real_pivot_pos = last_confirmed_pos - RIGHT_BARS
         real_pivot_ts = closed_df.index[real_pivot_pos]
         
+        # مقادیر RSI/MACD/Hist در موقعیت واقعی پیوت
         ph_price_2 = float(pivot_high.iloc[last_confirmed_pos])
         ph_ts_2 = real_pivot_ts
-        ph_rsi_2 = float(rsi_at_pivot_high.iloc[last_confirmed_pos])
-        ph_macdline_2 = float(macdline_at_pivot_high.iloc[last_confirmed_pos])
-        ph_hist_2 = float(hist_at_pivot_high.iloc[last_confirmed_pos])
+        ph_rsi_2 = float(rsi_val.iloc[real_pivot_pos])
+        ph_macdline_2 = float(macd_line.iloc[real_pivot_pos])
+        ph_hist_2 = float(hist_line.iloc[real_pivot_pos])
         new_pivot_high = True
         
         state.ph_price_2 = ph_price_2
@@ -1135,9 +1107,9 @@ def detect_signal(df, state, symbol):
         
         pl_price_2 = float(pivot_low.iloc[last_confirmed_pos])
         pl_ts_2 = real_pivot_ts
-        pl_rsi_2 = float(rsi_at_pivot_low.iloc[last_confirmed_pos])
-        pl_macdline_2 = float(macdline_at_pivot_low.iloc[last_confirmed_pos])
-        pl_hist_2 = float(hist_at_pivot_low.iloc[last_confirmed_pos])
+        pl_rsi_2 = float(rsi_val.iloc[real_pivot_pos])
+        pl_macdline_2 = float(macd_line.iloc[real_pivot_pos])
+        pl_hist_2 = float(hist_line.iloc[real_pivot_pos])
         new_pivot_low = True
         
         state.pl_price_2 = pl_price_2
@@ -1192,9 +1164,10 @@ def detect_signal(df, state, symbol):
         classic_bearish_cond3_macdh = price_higher_high and hist_lower_high and both_peaks_green and macd_color_high
         classic_bearish_base3 = price_higher_high and trend_ok and classic_bearish_cond3_macdh and classic_bearish_cond1_rsi and classic_bearish_cond2_macdl
         
-        # محاسبه Price Action روی کل سری
+        # Price Action روی کندل تأیید
+        confirm_pos = min(last_confirmed_pos, n - 1)
         pa_bullish, pa_bearish = calc_price_action(closed_df, atr14)
-        pa_ok = bool(pa_bearish.iloc[last_confirmed_pos]) if last_confirmed_pos < len(pa_bearish) else False
+        pa_ok = bool(pa_bearish.iloc[confirm_pos]) if confirm_pos < len(pa_bearish) else False
         
         log(f"   🔴 CD- check | PH1={ph_price_1:.4f} (RSI={ph_rsi_1:.2f}) → PH2={ph_price_2:.4f} (RSI={ph_rsi_2:.2f})")
         
@@ -1204,7 +1177,6 @@ def detect_signal(df, state, symbol):
             if pl_price_2 is not None and pl_price_1 is not None:
                 stop_price = min(pl_price_1, pl_price_2) - STOP_BUFFER_PCT * atr14.iloc[-1]
                 
-                # mid_peak مشابه منطق اصلی
                 try:
                     pos1 = closed_df.index.get_loc(pl_ts_1)
                     pos2 = closed_df.index.get_loc(pl_ts_2)
@@ -1239,6 +1211,13 @@ def detect_signal(df, state, symbol):
                         best_details = details
                         best_pivot1 = {'price': ph_price_1, 'rsi': ph_rsi_1, 'macdline': ph_macdline_1, 'hist': ph_hist_1, 'ts': ph_ts_1}
                         best_pivot2 = {'price': ph_price_2, 'rsi': ph_rsi_2, 'macdline': ph_macdline_2, 'hist': ph_hist_2, 'ts': ph_ts_2}
+        else:
+            log(f"   🔴 CD- score=0/6")
+            log(f"      {'✅' if rsi_lower_high else '❌'} RSI")
+            log(f"      {'✅' if macd_lower_high else '❌'} MACD Line")
+            log(f"      {'✅' if hist_lower_high and both_peaks_green and macd_color_high else '❌'} MACD Histogram")
+            log(f"      {'✅' if trend_ok else '❌'} Trend")
+            log(f"      ❌ Base3 برقرار نیست")
     
     # ============================================================
     # 2. Classic Bullish
@@ -1262,8 +1241,9 @@ def detect_signal(df, state, symbol):
         classic_bullish_cond3_macdh = price_lower_low and hist_higher_low and both_troughs_red and macd_color_low
         classic_bullish_base3 = price_lower_low and trend_ok and classic_bullish_cond3_macdh and classic_bullish_cond1_rsi and classic_bullish_cond2_macdl
         
+        confirm_pos = min(last_confirmed_pos, n - 1)
         pa_bullish, pa_bearish = calc_price_action(closed_df, atr14)
-        pa_ok = bool(pa_bullish.iloc[last_confirmed_pos]) if last_confirmed_pos < len(pa_bullish) else False
+        pa_ok = bool(pa_bullish.iloc[confirm_pos]) if confirm_pos < len(pa_bullish) else False
         
         log(f"   🟢 CD+ check | PL1={pl_price_1:.4f} (RSI={pl_rsi_1:.2f}) → PL2={pl_price_2:.4f} (RSI={pl_rsi_2:.2f})")
         
@@ -1307,6 +1287,13 @@ def detect_signal(df, state, symbol):
                         best_details = details
                         best_pivot1 = {'price': pl_price_1, 'rsi': pl_rsi_1, 'macdline': pl_macdline_1, 'hist': pl_hist_1, 'ts': pl_ts_1}
                         best_pivot2 = {'price': pl_price_2, 'rsi': pl_rsi_2, 'macdline': pl_macdline_2, 'hist': pl_hist_2, 'ts': pl_ts_2}
+        else:
+            log(f"   🟢 CD+ score=0/6")
+            log(f"      {'✅' if rsi_higher_low else '❌'} RSI")
+            log(f"      {'✅' if macd_higher_low else '❌'} MACD Line")
+            log(f"      {'✅' if hist_higher_low and both_troughs_red and macd_color_low else '❌'} MACD Histogram")
+            log(f"      {'✅' if trend_ok else '❌'} Trend")
+            log(f"      ❌ Base3 برقرار نیست")
     
     # ============================================================
     # 3. Hidden Bullish
@@ -1330,8 +1317,9 @@ def detect_signal(df, state, symbol):
         hidden_bullish_cond3_macdh = price_higher_low and hist_lower_low and both_troughs_red and macd_color_low
         hidden_bullish_base3 = price_higher_low and hidden_bullish_cond3_macdh and hidden_bullish_cond1_rsi and hidden_bullish_cond2_macdl
         
+        confirm_pos = min(last_confirmed_pos, n - 1)
         pa_bullish, pa_bearish = calc_price_action(closed_df, atr14)
-        pa_ok = bool(pa_bullish.iloc[last_confirmed_pos]) if last_confirmed_pos < len(pa_bullish) else False
+        pa_ok = bool(pa_bullish.iloc[confirm_pos]) if confirm_pos < len(pa_bullish) else False
         
         log(f"   🔵 HD+ check | PL1={pl_price_1:.4f} (RSI={pl_rsi_1:.2f}) → PL2={pl_price_2:.4f} (RSI={pl_rsi_2:.2f})")
         
@@ -1375,6 +1363,12 @@ def detect_signal(df, state, symbol):
                         best_details = details
                         best_pivot1 = {'price': pl_price_1, 'rsi': pl_rsi_1, 'macdline': pl_macdline_1, 'hist': pl_hist_1, 'ts': pl_ts_1}
                         best_pivot2 = {'price': pl_price_2, 'rsi': pl_rsi_2, 'macdline': pl_macdline_2, 'hist': pl_hist_2, 'ts': pl_ts_2}
+        else:
+            log(f"   🔵 HD+ score=0/6")
+            log(f"      {'✅' if rsi_lower_low else '❌'} RSI")
+            log(f"      {'✅' if macd_lower_low else '❌'} MACD Line")
+            log(f"      {'✅' if hist_lower_low and both_troughs_red and macd_color_low else '❌'} MACD Histogram")
+            log(f"      ❌ Base3 برقرار نیست")
     
     # ============================================================
     # 4. Hidden Bearish
@@ -1398,8 +1392,9 @@ def detect_signal(df, state, symbol):
         hidden_bearish_cond3_macdh = price_lower_high and hist_higher_high and both_peaks_green and macd_color_high
         hidden_bearish_base3 = price_lower_high and hidden_bearish_cond3_macdh and hidden_bearish_cond1_rsi and hidden_bearish_cond2_macdl
         
+        confirm_pos = min(last_confirmed_pos, n - 1)
         pa_bullish, pa_bearish = calc_price_action(closed_df, atr14)
-        pa_ok = bool(pa_bearish.iloc[last_confirmed_pos]) if last_confirmed_pos < len(pa_bearish) else False
+        pa_ok = bool(pa_bearish.iloc[confirm_pos]) if confirm_pos < len(pa_bearish) else False
         
         log(f"   🟠 HD- check | PH1={ph_price_1:.4f} (RSI={ph_rsi_1:.2f}) → PH2={ph_price_2:.4f} (RSI={ph_rsi_2:.2f})")
         
@@ -1443,6 +1438,12 @@ def detect_signal(df, state, symbol):
                         best_details = details
                         best_pivot1 = {'price': ph_price_1, 'rsi': ph_rsi_1, 'macdline': ph_macdline_1, 'hist': ph_hist_1, 'ts': ph_ts_1}
                         best_pivot2 = {'price': ph_price_2, 'rsi': ph_rsi_2, 'macdline': ph_macdline_2, 'hist': ph_hist_2, 'ts': ph_ts_2}
+        else:
+            log(f"   🟠 HD- score=0/6")
+            log(f"      {'✅' if rsi_higher_high else '❌'} RSI")
+            log(f"      {'✅' if macd_higher_high else '❌'} MACD Line")
+            log(f"      {'✅' if hist_higher_high and both_peaks_green and macd_color_high else '❌'} MACD Histogram")
+            log(f"      ❌ Base3 برقرار نیست")
     
     save_states()
     
