@@ -381,10 +381,8 @@ class TrueTradePrivateExchange:
 
 def send_telegram_message(message: str):
     try:
-        # حذف کاراکترهای خطرناک Markdown
         clean_message = re.sub(r'```[^`]*```', '', message)
         clean_message = re.sub(r'[*_~`]', '', clean_message)
-        # محدودیت 4096 کاراکتر تلگرام
         if len(clean_message) > 4000:
             clean_message = clean_message[:4000] + "\n... (ادامه)"
         
@@ -393,8 +391,8 @@ def send_telegram_message(message: str):
             url, 
             json={
                 "chat_id": TELEGRAM_CHAT_ID, 
-                "text": clean_message, 
-                "parse_mode": None
+                "text": clean_message
+                # parse_mode حذف شد
             }, 
             timeout=30
         )
@@ -402,6 +400,8 @@ def send_telegram_message(message: str):
             logger.error(f"[TELEGRAM] Status: {response.status_code}, Response: {response.text[:200]}")
     except Exception as e:
         logger.error(f"[TELEGRAM] Error: {e}")
+
+
 
 def format_iran_time(dt=None):
     if dt is None:
