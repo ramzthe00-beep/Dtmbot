@@ -1,6 +1,8 @@
 # -*- coding: utf-8 -*-
 """
 DTM Divergence Auto-Trading Bot - TheTrueTrade
+===============================================
+منطق تشخیص سیگنال: کاملاً عین dtm(1).py (بدون MTF)
 """
 
 import os
@@ -11,6 +13,7 @@ import hmac
 import requests
 import json
 import logging
+import re
 from datetime import datetime, timezone, timedelta
 from flask import Flask
 import pandas as pd
@@ -67,7 +70,7 @@ HASHTAGS = {
 }
 
 # =====================================================================================
-# ثابت‌های استراتژی (مطابق کد اول)
+# ثابت‌های استراتژی (مطابق کد اول - بدون MTF)
 # =====================================================================================
 PIVOT_MODE = "سریع (5/3)"
 RSI_LEN = 14
@@ -87,13 +90,11 @@ MAX_OPPOSITE_SHADOW_PCT = 20.0
 MIN_CANDLE_ATR_RATIO = 0.3
 BIG_CANDLE_AVG_LEN = 14
 BIG_CANDLE_MULTIPLIER = 1.5
-ENABLE_MTF = False
-MTF_TIMEFRAME = "240"
 
 LEFT_BARS = 5
 RIGHT_BARS = 3
 STOP_BUFFER_PCT = 0.05
-HISTORY_BARS = 1000
+HISTORY_BARS = 150
 API_RETURNS_OPEN_CANDLE = False
 
 # =====================================================================================
@@ -294,14 +295,13 @@ class TrueTradePrivateExchange:
                 order_data["takeProfit"] = f"{params['takeProfit']:.{prec}f}"
 
         send_telegram_message(
-            f"📤 ثبت سفارش - درخواست {HASHTAGS['order_request']}\n"
+            f"📤 ثبت سفارش - درخواست\n"
             f"━━━━━━━━━━━━━━━━━━━━━━\n"
             f"🔹 Symbol: {symbol}\n"
             f"🔸 Side: {side.upper()}\n"
             f"🔸 Type: {order_type.upper()}\n"
             f"💰 Cost: {capital:.{prec}f}\n"
             f"🔧 Leverage: {order_data['leverage']}\n"
-            f"📦 Body:\n```\n{json.dumps(order_data, indent=2)}\n```\n"
             f"━━━━━━━━━━━━━━━━━━━━━━\n"
             f"🕒 {format_iran_time()}"
         )
@@ -310,11 +310,10 @@ class TrueTradePrivateExchange:
             result = self._request('POST', '/futures/positions', order_data)
 
             send_telegram_message(
-                f"📥 ثبت سفارش - پاسخ {HASHTAGS['order_response']}\n"
+                f"📥 ثبت سفارش - پاسخ\n"
                 f"━━━━━━━━━━━━━━━━━━━━━━\n"
                 f"🔹 Symbol: {symbol}\n"
                 f"✅ Success - Position ID: {result.get('positionId', 'N/A')}\n"
-                f"📦 Response:\n```\n{json.dumps(result, indent=2)[:500]}\n```\n"
                 f"━━━━━━━━━━━━━━━━━━━━━━\n"
                 f"🕒 {format_iran_time()}"
             )
@@ -358,17 +357,13 @@ class TrueTradePrivateExchange:
                     error_detail = error_body[:500]
 
             send_telegram_message(
-                f"❌ ثبت سفارش - خطا {HASHTAGS['order_error']}\n"
+                f"❌ ثبت سفارش - خطا\n"
                 f"━━━━━━━━━━━━━━━━━━━━━━\n"
                 f"🔹 Symbol: {symbol}\n"
                 f"🔸 Side: {side.upper()}\n"
                 f"📊 Status: {status_code}\n"
                 f"━━━━━━━━━━━━━━━━━━━━━━\n"
-                f"📝 دلیل خطا:\n{error_detail if error_detail else str(e)[:500]}\n"
-                f"━━━━━━━━━━━━━━━━━━━━━━\n"
-                f"📤 درخواست:\n```\n{json.dumps(order_data, indent=2)}\n```\n"
-                f"━━━━━━━━━━━━━━━━━━━━━━\n"
-                f"📥 پاسخ کامل:\n```\n{error_body[:1000]}\n```\n"
+                f"📝 دلیل خطا:\n{error_detail if error_detail else str(e)[:200]}\n"
                 f"━━━━━━━━━━━━━━━━━━━━━━\n"
                 f"🕒 {format_iran_time()}"
             )
@@ -386,8 +381,23 @@ class TrueTradePrivateExchange:
 
 def send_telegram_message(message: str):
     try:
+        # حذف کاراکترهای خطرناک Markdown
+        clean_message = re.sub(r'```[^`]*```', '', message)
+        clean_message = re.sub(r'[*_~`]', '', clean_message)
+        # محدودیت 4096 کاراکتر تلگرام
+        if len(clean_message) > 4000:
+            clean_message = clean_message[:4000] + "\n... (ادامه)"
+        
         url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-        response = requests.post(url, json={"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": "Markdown"}, timeout=30)
+        response = requests.post(
+            url, 
+            json={
+                "chat_id": TELEGRAM_CHAT_ID, 
+                "text": clean_message, 
+                "parse_mode": None
+            }, 
+            timeout=30
+        )
         if response.status_code != 200:
             logger.error(f"[TELEGRAM] Status: {response.status_code}, Response: {response.text[:200]}")
     except Exception as e:
@@ -459,7 +469,7 @@ def save_debug_log_to_file(symbol, debug_log_lines):
         logger.error(f"[DEBUG FILE] Error writing log: {e}")
 
 # =====================================================================================
-# ======================== توابع محاسباتی ===========================================
+# ======================== توابع محاسباتی (دستی - جایگزین pynecore) ==================
 # =====================================================================================
 
 def calc_rma(series, length):
@@ -870,7 +880,7 @@ def load_states():
         logger.info(f"[STATE] No state file found, starting fresh")
 
 # =====================================================================================
-# تابع تشخیص سیگنال
+# تابع تشخیص سیگنال (بدون MTF)
 # =====================================================================================
 
 def detect_signal(df, state, symbol):
@@ -1018,7 +1028,9 @@ def detect_signal(df, state, symbol):
     best_pivot1 = None
     best_pivot2 = None
     
-    # Classic Bearish
+    # ============================================================
+    # 1. Classic Bearish
+    # ============================================================
     if new_pivot_high and ph_bar_1 is not None:
         price_higher_high = ph_price_2 > ph_price_1
         rsi_lower_high = ph_rsi_2 < ph_rsi_1
@@ -1083,7 +1095,9 @@ def detect_signal(df, state, symbol):
             log(f"      {'✅' if trend_ok else '❌'} Trend (trendOkForBearish)")
             log(f"      ❌ Base3 برقرار نیست")
     
-    # Classic Bullish
+    # ============================================================
+    # 2. Classic Bullish
+    # ============================================================
     if new_pivot_low and pl_bar_1 is not None:
         price_lower_low = pl_price_2 < pl_price_1
         rsi_higher_low = pl_rsi_2 > pl_rsi_1
@@ -1148,7 +1162,9 @@ def detect_signal(df, state, symbol):
             log(f"      {'✅' if trend_ok else '❌'} Trend (trendOkForBullish)")
             log(f"      ❌ Base3 برقرار نیست")
     
-    # Hidden Bullish
+    # ============================================================
+    # 3. Hidden Bullish
+    # ============================================================
     if new_pivot_low and pl_bar_1 is not None and ENABLE_HIDDEN:
         price_higher_low = pl_price_2 > pl_price_1
         rsi_lower_low = pl_rsi_2 < pl_rsi_1
@@ -1212,7 +1228,9 @@ def detect_signal(df, state, symbol):
             log(f"      {'✅' if hist_lower_low and both_troughs_red and macd_color_low else '❌'} MACD Histogram")
             log(f"      ❌ Base3 برقرار نیست")
     
-    # Hidden Bearish
+    # ============================================================
+    # 4. Hidden Bearish
+    # ============================================================
     if new_pivot_high and ph_bar_1 is not None and ENABLE_HIDDEN:
         price_lower_high = ph_price_2 < ph_price_1
         rsi_higher_high = ph_rsi_2 > ph_rsi_1
@@ -1569,18 +1587,17 @@ def analyze_and_execute():
                 pivot2_info = f"Pivot دوم: قیمت {pivot2['price']:.4f} @ کندل {pivot2['bar']} (RSI={pivot2['rsi']:.2f})" if pivot2 else "Pivot دوم: نامشخص"
                 
                 signal_message = (
-                    f"{emoji} {signal_type} — {symbol} {HASHTAGS['signal']} #Signal_{signal_number}\n"
-                    f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
+                    f"{emoji} {signal_type} — {symbol} #Signal_{signal_number}\n"
+                    f"━━━━━━━━━━━━━━━━━━━━━━\n"
                     f"📊 Score: {score}/6\n"
-                    f"🔸 {direction_emoji} Direction: {direction_text}\n\n"
+                    f"🔸 Direction: {direction_text}\n"
                     f"📍 Entry: {entry:.{PRICE_PRECISION.get(symbol, 2)}f}\n"
                     f"🛑 Stop Loss: {stop:.{PRICE_PRECISION.get(symbol, 2)}f}\n"
-                    f"🎯 Take Profit: {target:.{PRICE_PRECISION.get(symbol, 2)}f}\n\n"
-                    f"📈 Potential Profit: +{profit_pct:.2f}%\n"
-                    f"📉 Potential Loss: -{loss_pct:.2f}%\n"
-                    f"⚖️ Risk/Reward Ratio: {rr:.2f}\n\n"
+                    f"🎯 Take Profit: {target:.{PRICE_PRECISION.get(symbol, 2)}f}\n"
+                    f"📈 Profit: +{profit_pct:.2f}% | 📉 Loss: -{loss_pct:.2f}%\n"
+                    f"⚖️ R/R: {rr:.2f}\n"
                     f"━━━━━━━━━━━━━━━━━━━━━━\n"
-                    f"📊 اطلاعات Pivot‌ها:\n"
+                    f"📊 Pivot‌ها:\n"
                     f"• {pivot1_info}\n"
                     f"• {pivot2_info}\n"
                     f"━━━━━━━━━━━━━━━━━━━━━━\n"
@@ -1616,17 +1633,16 @@ def analyze_and_execute():
                         save_history(history)
 
                         order_message = (
-                            f"✅ سفارش ثبت شد — {symbol} #سیگنال_{signal_number}\n\n"
+                            f"✅ سفارش ثبت شد — {symbol} #سیگنال_{signal_number}\n"
                             f"🔸 {side_map[signal]} | 💰 {capital:.2f} USDT | 🔧 {int(used_leverage)}x\n"
                         )
                         if capital_reduced:
                             order_message += (
-                                f"⚠️ سرمایه کاهش یافت!\n"
-                                f"📐 لازم: {required_capital:.2f} | 💰 موجود: {balance:.2f}\n"
+                                f"⚠️ سرمایه کاهش یافت! (لازم: {required_capital:.2f} | موجود: {balance:.2f})\n"
                             )
                         order_message += (
                             f"🛑 {stop:.4f} | 🎯 {target:.4f}\n"
-                            f"📉 ریسک: {actual_risk:.2f} USDT | 📈 سود بالقوه: {potential_profit:.2f} USDT\n"
+                            f"📉 ریسک: {actual_risk:.2f} USDT | 📈 سود: {potential_profit:.2f} USDT\n"
                             f"🕒 {format_iran_time()}"
                         )
                         send_telegram_message(order_message)
@@ -1677,23 +1693,22 @@ if __name__ == "__main__":
     load_states()
 
     send_telegram_message(
-        f"🤖 DTM Divergence Light — آنلاین {HASHTAGS['startup']}\n\n"
-        f"🧠 منطق کاملاً عین dtm(1).py (Pine Script)\n"
+        f"🤖 DTM Divergence Light — آنلاین {HASHTAGS['startup']}\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"🧠 منطق: عین dtm(1).py (بدون MTF)\n"
         f"📊 Pivot: {PIVOT_MODE} ({LEFT_BARS}/{RIGHT_BARS})\n"
-        f"⚙️ Base3: RSI + MACD Line + MACD Histogram (اجباری)\n"
-        f"⚙️ Trend + Fibonacci + Price Action (امتیازی)\n"
-        f"⚙️ همه ۴ نوع واگرایی: Classic/Hidden + BUY/SELL\n"
-        f"⚙️ MIN_CONFIRMATIONS: {MIN_CONFIRMATIONS}\n"
-        f"🔧 ETH=50x | LTC/DOGE=75x\n\n"
-        f"📊 پارامترهای استراتژی:\n"
-        f"   • RSI_LEN: {RSI_LEN}\n"
-        f"   • MACD: {MACD_FAST}/{MACD_SLOW}/{MACD_SIG}\n"
-        f"   • TREND_LOOKBACK: {TREND_LOOKBACK}\n"
-        f"   • TREND_SLOPE_MIN_PCT: {TREND_SLOPE_MIN_PCT}%\n"
-        f"   • FIB_USE_618: {FIB_USE_618}\n"
-        f"   • FIB_USE_786: {FIB_USE_786}\n"
-        f"   • FIB_TOLERANCE_PCT: {FIB_TOLERANCE_PCT}%\n"
-        f"   • ENABLE_HIDDEN: {ENABLE_HIDDEN}\n\n"
+        f"⚙️ Base3: RSI + MACD Line + MACD Histogram\n"
+        f"⚙️ Trend + Fibonacci + PA (امتیازی)\n"
+        f"⚙️ ۴ نوع واگرایی: Classic/Hidden + BUY/SELL\n"
+        f"🔧 ETH=50x | LTC/DOGE=75x\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"📊 پارامترها:\n"
+        f"   RSI_LEN: {RSI_LEN}\n"
+        f"   MACD: {MACD_FAST}/{MACD_SLOW}/{MACD_SIG}\n"
+        f"   TREND_LOOKBACK: {TREND_LOOKBACK}\n"
+        f"   TREND_SLOPE_MIN_PCT: {TREND_SLOPE_MIN_PCT}%\n"
+        f"   ENABLE_HIDDEN: {ENABLE_HIDDEN}\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n"
         f"🕒 {format_iran_time()}"
     )
     
