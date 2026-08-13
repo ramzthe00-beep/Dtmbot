@@ -94,7 +94,7 @@ BIG_CANDLE_MULTIPLIER = 1.5
 LEFT_BARS = 5
 RIGHT_BARS = 3
 STOP_BUFFER_PCT = 0.05
-HISTORY_BARS = 150
+HISTORY_BARS = 500
 API_RETURNS_OPEN_CANDLE = False
 
 # =====================================================================================
