@@ -461,8 +461,6 @@ def send_telegram_message(message: str):
     except Exception as e:
         logger.error(f"[TELEGRAM] Error: {e}")
 
-
-
 def format_iran_time(dt=None):
     if dt is None:
         dt = datetime.now(timezone(timedelta(hours=3, minutes=30)))
@@ -980,6 +978,131 @@ def load_states():
         logger.info(f"[STATE] No state file found, starting fresh")
 
 # =====================================================================================
+# ======================== توابع تبدیل =============================================
+# =====================================================================================
+
+def resolve_bar_from_ts(df_indexed, ts):
+    """دریافت ایندکس کندل بر اساس timestamp"""
+    if ts is None:
+        return None
+    try:
+        if ts.tzinfo is None:
+            ts = ts.tz_localize('UTC')
+        if df_indexed.index.tzinfo is None:
+            df_index = df_indexed.index.tz_localize('UTC')
+        else:
+            df_index = df_indexed.index
+        return df_index.get_loc(ts)
+    except KeyError:
+        return None
+
+def resolve_ts_from_bar(df_indexed, bar):
+    """دریافت timestamp از ایندکس کندل"""
+    if bar is None or bar < 0 or bar >= len(df_indexed):
+        return None
+    return df_indexed.index[bar]
+
+# =====================================================================================
+# ======================== محاسبه استاپ و تارگت =====================================
+# =====================================================================================
+
+def compute_stop_and_targets(pivot_highs, pivot_lows, direction, df_indexed, atr_val, stop_buffer_pct=STOP_BUFFER_PCT, min_rr=2.0):
+    """
+    محاسبه Stop Loss و Take Profit بر اساس منطق صحیح واگرایی
+    
+    LONG:
+        - Stop = min(دو دره) - buffer * ATR
+        - Target = قله بین دو دره (mid_peak)
+        - اگر RRR < 2 → target رو بالا ببر تا RRR = 2
+    
+    SHORT:
+        - Stop = max(دو قله) + buffer * ATR
+        - Target = دره بین دو قله (mid_trough)
+        - اگر RRR < 2 → target رو پایین ببر تا RRR = 2
+    """
+    entry_price = float(df_indexed['close'].iloc[-1])
+    
+    if direction == "long":
+        if len(pivot_lows) < 2:
+            logger.warning("[STOP] Not enough pivot lows for LONG")
+            return None, None, None
+        
+        pl_1, pl_2 = pivot_lows[-2], pivot_lows[-1]
+        bar1 = resolve_bar_from_ts(df_indexed, pl_1['ts'])
+        bar2 = resolve_bar_from_ts(df_indexed, pl_2['ts'])
+        
+        if bar1 is None or bar2 is None or bar2 <= bar1:
+            logger.warning("[STOP] Invalid bar indices for LONG")
+            return None, None, None
+        
+        # Stop Loss: پایین‌ترین دره - buffer * ATR
+        stop_price = min(pl_1['price'], pl_2['price']) - stop_buffer_pct * atr_val
+        
+        # Take Profit اولیه: قله بین دو دره
+        try:
+            mid_peak = df_indexed["high"].iloc[bar1+1:bar2].max()
+            if pd.isna(mid_peak):
+                logger.warning("[STOP] No mid peak found")
+                return None, None, None
+        except:
+            return None, None, None
+        
+        target_price = float(mid_peak)
+        
+        # محاسبه RRR و اصلاح target در صورت نیاز
+        risk = abs(entry_price - stop_price)
+        reward = abs(target_price - entry_price)
+        rr = reward / risk if risk > 0 else 0
+        
+        if rr < min_rr:
+            target_price = entry_price + risk * min_rr
+            logger.info(f"[STOP] LONG RRR={rr:.2f} < {min_rr}, target adjusted to {target_price:.4f}")
+        
+        logger.info(f"[STOP] LONG: entry={entry_price:.4f}, stop={stop_price:.4f}, target={target_price:.4f}, RRR={max(rr, min_rr):.2f}")
+        return stop_price, target_price, mid_peak
+        
+    elif direction == "short":
+        if len(pivot_highs) < 2:
+            logger.warning("[STOP] Not enough pivot highs for SHORT")
+            return None, None, None
+        
+        ph_1, ph_2 = pivot_highs[-2], pivot_highs[-1]
+        bar1 = resolve_bar_from_ts(df_indexed, ph_1['ts'])
+        bar2 = resolve_bar_from_ts(df_indexed, ph_2['ts'])
+        
+        if bar1 is None or bar2 is None or bar2 <= bar1:
+            logger.warning("[STOP] Invalid bar indices for SHORT")
+            return None, None, None
+        
+        # Stop Loss: بالاترین قله + buffer * ATR
+        stop_price = max(ph_1['price'], ph_2['price']) + stop_buffer_pct * atr_val
+        
+        # Take Profit اولیه: دره بین دو قله
+        try:
+            mid_trough = df_indexed["low"].iloc[bar1+1:bar2].min()
+            if pd.isna(mid_trough):
+                logger.warning("[STOP] No mid trough found")
+                return None, None, None
+        except:
+            return None, None, None
+        
+        target_price = float(mid_trough)
+        
+        # محاسبه RRR و اصلاح target در صورت نیاز
+        risk = abs(stop_price - entry_price)
+        reward = abs(entry_price - target_price)
+        rr = reward / risk if risk > 0 else 0
+        
+        if rr < min_rr:
+            target_price = entry_price - risk * min_rr
+            logger.info(f"[STOP] SHORT RRR={rr:.2f} < {min_rr}, target adjusted to {target_price:.4f}")
+        
+        logger.info(f"[STOP] SHORT: entry={entry_price:.4f}, stop={stop_price:.4f}, target={target_price:.4f}, RRR={max(rr, min_rr):.2f}")
+        return stop_price, target_price, mid_trough
+    
+    return None, None, None
+
+# =====================================================================================
 # تابع تشخیص سیگنال (مطابق PyneCore - بدون MTF)
 # =====================================================================================
 
@@ -1061,8 +1184,6 @@ def detect_signal(df, state, symbol):
     new_pivot_low = False
     
     # تشخیص پیوت جدید مطابق PyneCore
-    # در Pine: ta.pivothigh مقدار را در کندل i+rightBars قرار میدهد
-    # پس pivotHighPrice در last_confirmed_pos یعنی پیوت واقعی در last_confirmed_pos - rightBars
     if not pd.isna(pivot_high.iloc[last_confirmed_pos]):
         ph_price_1 = ph_price_2
         ph_ts_1 = ph_ts_2
@@ -1070,11 +1191,9 @@ def detect_signal(df, state, symbol):
         ph_macdline_1 = ph_macdline_2
         ph_hist_1 = ph_hist_2
         
-        # bar_index - rightBars → موقعیت واقعی پیوت
         real_pivot_pos = last_confirmed_pos - RIGHT_BARS
         real_pivot_ts = closed_df.index[real_pivot_pos]
         
-        # مقادیر RSI/MACD/Hist در موقعیت واقعی پیوت
         ph_price_2 = float(pivot_high.iloc[last_confirmed_pos])
         ph_ts_2 = real_pivot_ts
         ph_rsi_2 = float(rsi_val.iloc[real_pivot_pos])
@@ -1164,7 +1283,6 @@ def detect_signal(df, state, symbol):
         classic_bearish_cond3_macdh = price_higher_high and hist_lower_high and both_peaks_green and macd_color_high
         classic_bearish_base3 = price_higher_high and trend_ok and classic_bearish_cond3_macdh and classic_bearish_cond1_rsi and classic_bearish_cond2_macdl
         
-        # Price Action روی کندل تأیید
         confirm_pos = min(last_confirmed_pos, n - 1)
         pa_bullish, pa_bearish = calc_price_action(closed_df, atr14)
         pa_ok = bool(pa_bearish.iloc[confirm_pos]) if confirm_pos < len(pa_bearish) else False
@@ -1175,21 +1293,14 @@ def detect_signal(df, state, symbol):
             entry_price = float(close_series.iloc[-1])
             
             if pl_price_2 is not None and pl_price_1 is not None:
-                stop_price = min(pl_price_1, pl_price_2) - STOP_BUFFER_PCT * atr14.iloc[-1]
+                # محاسبه استاپ و تارگت با منطق صحیح
+                # pivot_highs و pivot_lows رو به تابع می‌فرستیم
+                stop_price, target_price, mid_peak = compute_stop_and_targets(
+                    state.pivot_highs, state.pivot_lows, "short", 
+                    closed_df, atr14.iloc[-1]
+                )
                 
-                try:
-                    pos1 = closed_df.index.get_loc(pl_ts_1)
-                    pos2 = closed_df.index.get_loc(pl_ts_2)
-                    if pos2 > pos1 + 1:
-                        mid_peak = high_series.iloc[pos1+1:pos2].max()
-                    else:
-                        mid_peak = None
-                except (KeyError, IndexError):
-                    mid_peak = None
-                
-                if mid_peak is not None and not pd.isna(mid_peak):
-                    target_price = mid_peak
-                    
+                if stop_price is not None and target_price is not None:
                     details = [
                         f"✅ priceHigherHigh and rsiLowerHighOnPeaks",
                         f"✅ priceHigherHigh and macdLineLowerHighOnPeaks",
@@ -1251,21 +1362,12 @@ def detect_signal(df, state, symbol):
             entry_price = float(close_series.iloc[-1])
             
             if ph_price_2 is not None and ph_price_1 is not None:
-                stop_price = max(ph_price_1, ph_price_2) + STOP_BUFFER_PCT * atr14.iloc[-1]
+                stop_price, target_price, mid_trough = compute_stop_and_targets(
+                    state.pivot_highs, state.pivot_lows, "long", 
+                    closed_df, atr14.iloc[-1]
+                )
                 
-                try:
-                    pos1 = closed_df.index.get_loc(ph_ts_1)
-                    pos2 = closed_df.index.get_loc(ph_ts_2)
-                    if pos2 > pos1 + 1:
-                        mid_trough = low_series.iloc[pos1+1:pos2].min()
-                    else:
-                        mid_trough = None
-                except (KeyError, IndexError):
-                    mid_trough = None
-                
-                if mid_trough is not None and not pd.isna(mid_trough):
-                    target_price = mid_trough
-                    
+                if stop_price is not None and target_price is not None:
                     details = [
                         f"✅ priceLowerLow and rsiHigherLowOnTroughs",
                         f"✅ priceLowerLow and macdLineHigherLowOnTroughs",
@@ -1327,21 +1429,12 @@ def detect_signal(df, state, symbol):
             entry_price = float(close_series.iloc[-1])
             
             if ph_price_2 is not None and ph_price_1 is not None:
-                stop_price = max(ph_price_1, ph_price_2) + STOP_BUFFER_PCT * atr14.iloc[-1]
+                stop_price, target_price, mid_trough = compute_stop_and_targets(
+                    state.pivot_highs, state.pivot_lows, "long", 
+                    closed_df, atr14.iloc[-1]
+                )
                 
-                try:
-                    pos1 = closed_df.index.get_loc(ph_ts_1)
-                    pos2 = closed_df.index.get_loc(ph_ts_2)
-                    if pos2 > pos1 + 1:
-                        mid_trough = low_series.iloc[pos1+1:pos2].min()
-                    else:
-                        mid_trough = None
-                except (KeyError, IndexError):
-                    mid_trough = None
-                
-                if mid_trough is not None and not pd.isna(mid_trough):
-                    target_price = mid_trough
-                    
+                if stop_price is not None and target_price is not None:
                     details = [
                         f"✅ priceHigherLow and rsiLowerLowOnTroughs",
                         f"✅ priceHigherLow and macdLineLowerLowOnTroughs",
@@ -1402,21 +1495,12 @@ def detect_signal(df, state, symbol):
             entry_price = float(close_series.iloc[-1])
             
             if pl_price_2 is not None and pl_price_1 is not None:
-                stop_price = min(pl_price_1, pl_price_2) - STOP_BUFFER_PCT * atr14.iloc[-1]
+                stop_price, target_price, mid_peak = compute_stop_and_targets(
+                    state.pivot_highs, state.pivot_lows, "short", 
+                    closed_df, atr14.iloc[-1]
+                )
                 
-                try:
-                    pos1 = closed_df.index.get_loc(pl_ts_1)
-                    pos2 = closed_df.index.get_loc(pl_ts_2)
-                    if pos2 > pos1 + 1:
-                        mid_peak = high_series.iloc[pos1+1:pos2].max()
-                    else:
-                        mid_peak = None
-                except (KeyError, IndexError):
-                    mid_peak = None
-                
-                if mid_peak is not None and not pd.isna(mid_peak):
-                    target_price = mid_peak
-                    
+                if stop_price is not None and target_price is not None:
                     details = [
                         f"✅ priceLowerHigh and rsiHigherHighOnPeaks",
                         f"✅ priceLowerHigh and macdLineHigherHighOnPeaks",
@@ -1649,10 +1733,33 @@ def analyze_and_execute():
                 send_telegram_message(f"⚡ Pivot جدید — {symbol} {HASHTAGS['pivot']}\n💰 {df['close'].iloc[-1]:.4f}\n⏳ ~۲ دقیقه تا تأیید\n🕒 {format_iran_time()}")
 
             if signal and stop and target:
+                # ============================================================
+                # ✅ اعتبارسنجی و اصلاح Stop Loss / Take Profit
+                # ============================================================
+                if signal == "BUY":
+                    # LONG: stop < entry < target
+                    if stop >= entry:
+                        logger.warning(f"[ORDER] {symbol} LONG: stop ({stop}) >= entry ({entry}), adjusting...")
+                        stop = entry * 0.98  # 2% زیر entry
+                    if target <= entry:
+                        logger.warning(f"[ORDER] {symbol} LONG: target ({target}) <= entry ({entry}), adjusting...")
+                        target = entry * 1.05  # 5% بالای entry
+                        
+                elif signal == "SELL":
+                    # SHORT: target < entry < stop
+                    if stop <= entry:
+                        logger.warning(f"[ORDER] {symbol} SHORT: stop ({stop}) <= entry ({entry}), adjusting...")
+                        stop = entry * 1.02  # 2% بالای entry
+                    if target >= entry:
+                        logger.warning(f"[ORDER] {symbol} SHORT: target ({target}) >= entry ({entry}), adjusting...")
+                        target = entry * 0.95  # 5% زیر entry
+
+                # گرد کردن قیمت‌ها
                 entry = exchange._round_price(entry, symbol)
                 stop = exchange._round_price(stop, symbol)
                 target = exchange._round_price(target, symbol)
 
+                # محاسبه درصدها
                 profit_pct = (target-entry)/entry*100 if signal=="BUY" else (entry-target)/entry*100
                 loss_pct = (entry-stop)/entry*100 if signal=="BUY" else (stop-entry)/entry*100
                 rr = abs(profit_pct/loss_pct) if loss_pct != 0 else 0
