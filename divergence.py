@@ -12,7 +12,6 @@ from config import (
     MACD_FAST,
     MACD_SLOW,
     MACD_SIG,
-    TREND_LOOKBACK,
     MIN_CONFIRMATIONS,
     ENABLE_HIDDEN,
     ENABLE_MACD_COLOR_FILTER,
