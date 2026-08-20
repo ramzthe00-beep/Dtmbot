@@ -4,6 +4,7 @@
 """
 
 import logging
+import numpy as np
 
 from config import HASHTAGS
 from utils import (
