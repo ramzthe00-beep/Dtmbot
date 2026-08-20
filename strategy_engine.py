@@ -6,6 +6,7 @@
 import time
 import logging
 import pandas as pd
+import numpy as np
 
 from config import (
     STOP_BUFFER_PCT,
