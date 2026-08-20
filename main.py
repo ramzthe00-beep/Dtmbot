@@ -14,6 +14,7 @@ import requests
 import json
 import logging
 import re
+import math
 from datetime import datetime, timezone, timedelta
 from flask import Flask
 import pandas as pd
@@ -806,21 +807,25 @@ def find_trend_start_low(low_series, ref_ts):
     """
     معادل دقیق findTrendStartLow در Pine Script
     برای واگرایی نزولی (روند صعودی): کمترین low در بازه‌ی شیفت‌شده
+    اصلاح‌شده: فقط تا refBar بررسی می‌کند، بدون Look-ahead
     """
     if ref_ts is None:
         return None
 
     try:
-        offset = low_series.index.get_loc(ref_ts)
+        ref_bar = low_series.index.get_loc(ref_ts)
+        current_index = len(low_series) - 1
+        
+        start = ref_bar - FIB_TREND_SEARCH_BARS + 1
+        end = ref_bar + 1
 
-        # Pine: low[offset] → سری شیفت‌شده
-        if offset < 0 or offset + FIB_TREND_SEARCH_BARS >= len(low_series):
+        if start < 0 or end > current_index + 1:
             return None
 
-        window = low_series.iloc[offset : offset + FIB_TREND_SEARCH_BARS]
+        window = low_series.iloc[start:end]
         result = window.min()
 
-        return None if pd.isna(result) else result
+        return None if pd.isna(result) else float(result)
 
     except (KeyError, IndexError):
         return None
@@ -829,20 +834,25 @@ def find_trend_start_high(high_series, ref_ts):
     """
     معادل دقیق findTrendStartHigh در Pine Script
     برای واگرایی صعودی (روند نزولی): بیشترین high در بازه‌ی شیفت‌شده
+    اصلاح‌شده: فقط تا refBar بررسی می‌کند، بدون Look-ahead
     """
     if ref_ts is None:
         return None
 
     try:
-        offset = high_series.index.get_loc(ref_ts)
+        ref_bar = high_series.index.get_loc(ref_ts)
+        current_index = len(high_series) - 1
+        
+        start = ref_bar - FIB_TREND_SEARCH_BARS + 1
+        end = ref_bar + 1
 
-        if offset < 0 or offset + FIB_TREND_SEARCH_BARS >= len(high_series):
+        if start < 0 or end > current_index + 1:
             return None
 
-        window = high_series.iloc[offset : offset + FIB_TREND_SEARCH_BARS]
+        window = high_series.iloc[start:end]
         result = window.max()
 
-        return None if pd.isna(result) else result
+        return None if pd.isna(result) else float(result)
 
     except (KeyError, IndexError):
         return None
@@ -851,32 +861,40 @@ def check_fib_level(fib_start, fib_end, target_price, is_retrace_down):
     """
     معادل دقیق checkFibLevel در Pine Script
     بررسی سطح 0.618 و 0.786 با تلورانس
+    اصلاح‌شده: کنترل جهت صحیح distance
     """
-    if fib_start is None or fib_end is None:
+    if fib_start is None or fib_end is None or target_price is None:
         return False
-    if fib_end == fib_start:
+    if fib_start == fib_end:
         return False
-
-    # دامنه فیبو
-    range_ = fib_end - fib_start
-    tol = abs(range_) * (FIB_TOLERANCE_PCT / 100.0)
-
-    # Pine: سطح‌ها بر اساس جهت روند
-    if is_retrace_down:
-        # روند صعودی → اصلاح نزولی
-        level618 = fib_end - range_ * 0.618
-        level786 = fib_end - range_ * 0.786
-    else:
-        # روند نزولی → اصلاح صعودی
-        level618 = fib_end + abs(range_) * 0.618
-        level786 = fib_end + abs(range_) * 0.786
 
     ok = False
 
-    if FIB_USE_618 and abs(target_price - level618) <= tol:
-        ok = True
-    if FIB_USE_786 and abs(target_price - level786) <= tol:
-        ok = True
+    if is_retrace_down:
+        # روند صعودی → اصلاح نزولی
+        distance = fib_end - fib_start
+        
+        if distance <= 0:
+            return False
+        
+        level618 = fib_end - distance * 0.618
+        level786 = fib_end - distance * 0.786
+    else:
+        # روند نزولی → اصلاح صعودی
+        distance = fib_start - fib_end
+        
+        if distance <= 0:
+            return False
+        
+        level618 = fib_end + distance * 0.618
+        level786 = fib_end + distance * 0.786
+
+    tolerance = distance * (FIB_TOLERANCE_PCT / 100.0)
+
+    valid618 = FIB_USE_618 and abs(target_price - level618) <= tolerance
+    valid786 = FIB_USE_786 and abs(target_price - level786) <= tolerance
+
+    ok = valid618 or valid786
 
     return ok
 
@@ -895,56 +913,64 @@ def candle_confirmation(
 ):
     """
     معادل دقیق کندل تأییدیه در Pine Script
+    اصلاح‌شده: محاسبه روی کندل Pivot با [rightBars]
     خروجی:
         bullish_confirmed (bool)
         bearish_confirmed (bool)
     """
 
     try:
-        idx = open_series.index.get_loc(pivot_ts)
+        pivot_pos = open_series.index.get_loc(pivot_ts)
     except KeyError:
         return False, False
 
-    # داده‌های کندل Pivot دوم
-    o = open_series.iloc[idx]
-    c = close_series.iloc[idx]
-    h = high_series.iloc[idx]
-    l = low_series.iloc[idx]
+    # داده‌های کندل Pivot دوم (روی کندل Pivot واقعی)
+    o = open_series.iloc[pivot_pos]
+    c = close_series.iloc[pivot_pos]
+    h = high_series.iloc[pivot_pos]
+    l = low_series.iloc[pivot_pos]
 
-    candle_range = h - l
-    candle_body = abs(c - o)
+    pivot_range = h - l
+    pivot_body = abs(c - o)
     upper_shadow = h - max(c, o)
     lower_shadow = min(c, o) - l
 
-    # ATR
-    atr14 = atr_series.iloc[idx]
+    # ATR روی کندل Pivot
+    atr_at_pivot = atr_series.iloc[pivot_pos]
 
-    # میانگین بدنه برای کندل بزرگ
-    if idx - bigCandleAvgLen >= 0:
-        avgbody = abs(close_series.iloc[idx - bigCandleAvgLen: idx] - open_series.iloc[idx - bigCandleAvgLen: idx]).mean()
+    # میانگین بدنه برای کندل بزرگ روی کندل Pivot
+    if pivot_pos - bigCandleAvgLen >= 0:
+        avg_body_at_pivot = abs(
+            close_series.iloc[pivot_pos - bigCandleAvgLen: pivot_pos] - 
+            open_series.iloc[pivot_pos - bigCandleAvgLen: pivot_pos]
+        ).mean()
     else:
-        avgbody = candle_body
+        avg_body_at_pivot = pivot_body
 
     # شرط حداقل اندازه کندل نسبت به ATR
-    sizeok = candle_range >= minCandleATRRatio * atr14
+    pivot_size_ok = (
+        pivot_range > 0
+        and not pd.isna(atr_at_pivot)
+        and pivot_range >= minCandleATRRatio * atr_at_pivot
+    )
 
     # ============================
     # Bullish Confirmation
     # ============================
 
-    # Pin Bar / Hammer
+    # Pin Bar / Hammer (بدون شرط رنگ، مطابق کد اصلی)
     bullish_wick = (
-        candle_range > 0
-        and lower_shadow >= shadowToBodyRatio * candle_body
-        and (upper_shadow / candle_range) * 100 <= maxOppositeShadowPct
-        and sizeok
+        pivot_size_ok
+        and lower_shadow >= shadowToBodyRatio * pivot_body
+        and (upper_shadow / pivot_range) * 100 <= maxOppositeShadowPct
     )
 
     # Big Green Candle
     big_green = (
-        c > o
-        and candle_body >= bigCandleMultiplier * avgbody
-        and sizeok
+        pivot_size_ok
+        and not pd.isna(avg_body_at_pivot)
+        and c > o
+        and pivot_body >= bigCandleMultiplier * avg_body_at_pivot
     )
 
     bullishconfirmed = bullish_wick or big_green
@@ -953,30 +979,22 @@ def candle_confirmation(
     # Bearish Confirmation
     # ============================
 
-    # Shooting Star
+    # Shooting Star (بدون شرط رنگ، مطابق کد اصلی)
     bearish_wick = (
-        candle_range > 0
-        and upper_shadow >= shadowToBodyRatio * candle_body
-        and (lower_shadow / candle_range) * 100 <= maxOppositeShadowPct
-        and sizeok
-    )
-
-    # Hanging Man
-    bearish_hanging = (
-        candle_range > 0
-        and lower_shadow >= shadowToBodyRatio * candle_body
-        and (upper_shadow / candle_range) * 100 <= maxOppositeShadowPct
-        and sizeok
+        pivot_size_ok
+        and upper_shadow >= shadowToBodyRatio * pivot_body
+        and (lower_shadow / pivot_range) * 100 <= maxOppositeShadowPct
     )
 
     # Big Red Candle
     big_red = (
-        c < o
-        and candle_body >= bigCandleMultiplier * avgbody
-        and sizeok
+        pivot_size_ok
+        and not pd.isna(avg_body_at_pivot)
+        and c < o
+        and pivot_body >= bigCandleMultiplier * avg_body_at_pivot
     )
 
-    bearishconfirmed = bearish_wick or bearish_hanging or big_red
+    bearishconfirmed = bearish_wick or big_red
 
     return bullishconfirmed, bearishconfirmed
 
@@ -1040,6 +1058,8 @@ class SymbolState:
         self.ph_price_1 = None
         self.ph_ts_2 = None
         self.ph_ts_1 = None
+        self.ph_bar_2 = None
+        self.ph_bar_1 = None
         self.ph_rsi_2 = None
         self.ph_rsi_1 = None
         self.ph_macdline_2 = None
@@ -1052,6 +1072,8 @@ class SymbolState:
         self.pl_price_1 = None
         self.pl_ts_2 = None
         self.pl_ts_1 = None
+        self.pl_bar_2 = None
+        self.pl_bar_1 = None
         self.pl_rsi_2 = None
         self.pl_rsi_1 = None
         self.pl_macdline_2 = None
@@ -1059,7 +1081,18 @@ class SymbolState:
         self.pl_hist_2 = None
         self.pl_hist_1 = None
         
+        # لیست pivot ها برای محاسبه stop و target
+        self.pivot_highs = []
+        self.pivot_lows = []
+        
+        # Stored Stop و Target برای مدیریت موقعیت
+        self.stored_long_stop = None
+        self.stored_short_stop = None
+        self.stored_long_tp = None
+        self.stored_short_tp = None
+        
         self.last_processed_ts = None
+        self.last_processed_pivot_bar = None
         self.alert_sent = False
 
     def to_dict(self):
@@ -1068,6 +1101,8 @@ class SymbolState:
             'ph_price_1': self.ph_price_1,
             'ph_ts_2': str(self.ph_ts_2) if self.ph_ts_2 else None,
             'ph_ts_1': str(self.ph_ts_1) if self.ph_ts_1 else None,
+            'ph_bar_2': self.ph_bar_2,
+            'ph_bar_1': self.ph_bar_1,
             'ph_rsi_2': self.ph_rsi_2,
             'ph_rsi_1': self.ph_rsi_1,
             'ph_macdline_2': self.ph_macdline_2,
@@ -1078,13 +1113,28 @@ class SymbolState:
             'pl_price_1': self.pl_price_1,
             'pl_ts_2': str(self.pl_ts_2) if self.pl_ts_2 else None,
             'pl_ts_1': str(self.pl_ts_1) if self.pl_ts_1 else None,
+            'pl_bar_2': self.pl_bar_2,
+            'pl_bar_1': self.pl_bar_1,
             'pl_rsi_2': self.pl_rsi_2,
             'pl_rsi_1': self.pl_rsi_1,
             'pl_macdline_2': self.pl_macdline_2,
             'pl_macdline_1': self.pl_macdline_1,
             'pl_hist_2': self.pl_hist_2,
             'pl_hist_1': self.pl_hist_1,
+            'pivot_highs': [
+                {'price': p['price'], 'ts': str(p['ts'])} 
+                for p in self.pivot_highs
+            ] if self.pivot_highs else [],
+            'pivot_lows': [
+                {'price': p['price'], 'ts': str(p['ts'])} 
+                for p in self.pivot_lows
+            ] if self.pivot_lows else [],
+            'stored_long_stop': self.stored_long_stop,
+            'stored_short_stop': self.stored_short_stop,
+            'stored_long_tp': self.stored_long_tp,
+            'stored_short_tp': self.stored_short_tp,
             'last_processed_ts': str(self.last_processed_ts) if self.last_processed_ts else None,
+            'last_processed_pivot_bar': self.last_processed_pivot_bar,
             'alert_sent': self.alert_sent
         }
 
@@ -1096,6 +1146,8 @@ class SymbolState:
             state.ph_price_1 = data.get('ph_price_1')
             state.ph_ts_2 = pd.Timestamp(data['ph_ts_2']) if data.get('ph_ts_2') else None
             state.ph_ts_1 = pd.Timestamp(data['ph_ts_1']) if data.get('ph_ts_1') else None
+            state.ph_bar_2 = data.get('ph_bar_2')
+            state.ph_bar_1 = data.get('ph_bar_1')
             state.ph_rsi_2 = data.get('ph_rsi_2')
             state.ph_rsi_1 = data.get('ph_rsi_1')
             state.ph_macdline_2 = data.get('ph_macdline_2')
@@ -1106,13 +1158,36 @@ class SymbolState:
             state.pl_price_1 = data.get('pl_price_1')
             state.pl_ts_2 = pd.Timestamp(data['pl_ts_2']) if data.get('pl_ts_2') else None
             state.pl_ts_1 = pd.Timestamp(data['pl_ts_1']) if data.get('pl_ts_1') else None
+            state.pl_bar_2 = data.get('pl_bar_2')
+            state.pl_bar_1 = data.get('pl_bar_1')
             state.pl_rsi_2 = data.get('pl_rsi_2')
             state.pl_rsi_1 = data.get('pl_rsi_1')
             state.pl_macdline_2 = data.get('pl_macdline_2')
             state.pl_macdline_1 = data.get('pl_macdline_1')
             state.pl_hist_2 = data.get('pl_hist_2')
             state.pl_hist_1 = data.get('pl_hist_1')
+            
+            # بازسازی pivot_highs و pivot_lows
+            state.pivot_highs = []
+            for p in data.get('pivot_highs', []):
+                state.pivot_highs.append({
+                    'price': p['price'],
+                    'ts': pd.Timestamp(p['ts']) if p.get('ts') else None
+                })
+            
+            state.pivot_lows = []
+            for p in data.get('pivot_lows', []):
+                state.pivot_lows.append({
+                    'price': p['price'],
+                    'ts': pd.Timestamp(p['ts']) if p.get('ts') else None
+                })
+            
+            state.stored_long_stop = data.get('stored_long_stop')
+            state.stored_short_stop = data.get('stored_short_stop')
+            state.stored_long_tp = data.get('stored_long_tp')
+            state.stored_short_tp = data.get('stored_short_tp')
             state.last_processed_ts = pd.Timestamp(data['last_processed_ts']) if data.get('last_processed_ts') else None
+            state.last_processed_pivot_bar = data.get('last_processed_pivot_bar')
             state.alert_sent = data.get('alert_sent', False)
         return state
 
@@ -1328,6 +1403,8 @@ def detect_signal(df, state, symbol):
     ph_price_1 = state.ph_price_1
     ph_ts_2 = state.ph_ts_2
     ph_ts_1 = state.ph_ts_1
+    ph_bar_2 = state.ph_bar_2
+    ph_bar_1 = state.ph_bar_1
     ph_rsi_2 = state.ph_rsi_2
     ph_rsi_1 = state.ph_rsi_1
     ph_macdline_2 = state.ph_macdline_2
@@ -1339,6 +1416,8 @@ def detect_signal(df, state, symbol):
     pl_price_1 = state.pl_price_1
     pl_ts_2 = state.pl_ts_2
     pl_ts_1 = state.pl_ts_1
+    pl_bar_2 = state.pl_bar_2
+    pl_bar_1 = state.pl_bar_1
     pl_rsi_2 = state.pl_rsi_2
     pl_rsi_1 = state.pl_rsi_1
     pl_macdline_2 = state.pl_macdline_2
@@ -1350,9 +1429,11 @@ def detect_signal(df, state, symbol):
     new_pivot_low = False
     
     # تشخیص پیوت جدید مطابق PyneCore
+    # اصلاح‌شده: real_pivot_pos = last_confirmed_pos - RIGHT_BARS
     if not pd.isna(pivot_high.iloc[last_confirmed_pos]):
         ph_price_1 = ph_price_2
         ph_ts_1 = ph_ts_2
+        ph_bar_1 = ph_bar_2
         ph_rsi_1 = ph_rsi_2
         ph_macdline_1 = ph_macdline_2
         ph_hist_1 = ph_hist_2
@@ -1362,15 +1443,19 @@ def detect_signal(df, state, symbol):
         
         ph_price_2 = float(pivot_high.iloc[last_confirmed_pos])
         ph_ts_2 = real_pivot_ts
+        ph_bar_2 = real_pivot_pos
         ph_rsi_2 = float(rsi_val.iloc[real_pivot_pos])
         ph_macdline_2 = float(macd_line.iloc[real_pivot_pos])
         ph_hist_2 = float(hist_line.iloc[real_pivot_pos])
         new_pivot_high = True
         
+        # ذخیره در state
         state.ph_price_2 = ph_price_2
         state.ph_price_1 = ph_price_1
         state.ph_ts_2 = ph_ts_2
         state.ph_ts_1 = ph_ts_1
+        state.ph_bar_2 = ph_bar_2
+        state.ph_bar_1 = ph_bar_1
         state.ph_rsi_2 = ph_rsi_2
         state.ph_rsi_1 = ph_rsi_1
         state.ph_macdline_2 = ph_macdline_2
@@ -1378,11 +1463,21 @@ def detect_signal(df, state, symbol):
         state.ph_hist_2 = ph_hist_2
         state.ph_hist_1 = ph_hist_1
         
+        # افزودن به لیست pivot_highs
+        state.pivot_highs.append({
+            'price': ph_price_2,
+            'ts': ph_ts_2
+        })
+        # محدود کردن طول لیست
+        if len(state.pivot_highs) > 10:
+            state.pivot_highs = state.pivot_highs[-10:]
+        
         logger.info(f"[PIVOT] {symbol} New Pivot High: price={ph_price_2:.4f}, ts={ph_ts_2}")
     
     if not pd.isna(pivot_low.iloc[last_confirmed_pos]):
         pl_price_1 = pl_price_2
         pl_ts_1 = pl_ts_2
+        pl_bar_1 = pl_bar_2
         pl_rsi_1 = pl_rsi_2
         pl_macdline_1 = pl_macdline_2
         pl_hist_1 = pl_hist_2
@@ -1392,21 +1487,34 @@ def detect_signal(df, state, symbol):
         
         pl_price_2 = float(pivot_low.iloc[last_confirmed_pos])
         pl_ts_2 = real_pivot_ts
+        pl_bar_2 = real_pivot_pos
         pl_rsi_2 = float(rsi_val.iloc[real_pivot_pos])
         pl_macdline_2 = float(macd_line.iloc[real_pivot_pos])
         pl_hist_2 = float(hist_line.iloc[real_pivot_pos])
         new_pivot_low = True
         
+        # ذخیره در state
         state.pl_price_2 = pl_price_2
         state.pl_price_1 = pl_price_1
         state.pl_ts_2 = pl_ts_2
         state.pl_ts_1 = pl_ts_1
+        state.pl_bar_2 = pl_bar_2
+        state.pl_bar_1 = pl_bar_1
         state.pl_rsi_2 = pl_rsi_2
         state.pl_rsi_1 = pl_rsi_1
         state.pl_macdline_2 = pl_macdline_2
         state.pl_macdline_1 = pl_macdline_1
         state.pl_hist_2 = pl_hist_2
         state.pl_hist_1 = pl_hist_1
+        
+        # افزودن به لیست pivot_lows
+        state.pivot_lows.append({
+            'price': pl_price_2,
+            'ts': pl_ts_2
+        })
+        # محدود کردن طول لیست
+        if len(state.pivot_lows) > 10:
+            state.pivot_lows = state.pivot_lows[-10:]
         
         logger.info(f"[PIVOT] {symbol} New Pivot Low: price={pl_price_2:.4f}, ts={pl_ts_2}")
     
@@ -1449,9 +1557,7 @@ def detect_signal(df, state, symbol):
         classic_bearish_cond3_macdh = price_higher_high and hist_lower_high and both_peaks_green and macd_color_high
         classic_bearish_base3 = price_higher_high and trend_ok and classic_bearish_cond3_macdh and classic_bearish_cond1_rsi and classic_bearish_cond2_macdl
         
-        confirm_pos = min(last_confirmed_pos, n - 1)
-        
-        # استفاده از Candle Confirmation به جای calc_price_action
+        # استفاده از Candle Confirmation روی کندل Pivot
         pa_bullish, pa_bearish = candle_confirmation(
             open_series, close_series, high_series, low_series, atr14,
             BIG_CANDLE_AVG_LEN, SHADOW_TO_BODY_RATIO, MAX_OPPOSITE_SHADOW_PCT,
@@ -1471,6 +1577,10 @@ def detect_signal(df, state, symbol):
             )
             
             if stop_price is not None and target_price is not None:
+                # ذخیره Stop و Target در state
+                state.stored_short_stop = stop_price
+                state.stored_short_tp = target_price
+                
                 details = [
                     f"✅ priceHigherHigh and rsiLowerHighOnPeaks",
                     f"✅ priceHigherHigh and macdLineLowerHighOnPeaks",
@@ -1522,9 +1632,7 @@ def detect_signal(df, state, symbol):
         classic_bullish_cond3_macdh = price_lower_low and hist_higher_low and both_troughs_red and macd_color_low
         classic_bullish_base3 = price_lower_low and trend_ok and classic_bullish_cond3_macdh and classic_bullish_cond1_rsi and classic_bullish_cond2_macdl
         
-        confirm_pos = min(last_confirmed_pos, n - 1)
-        
-        # استفاده از Candle Confirmation به جای calc_price_action
+        # استفاده از Candle Confirmation روی کندل Pivot
         pa_bullish, pa_bearish = candle_confirmation(
             open_series, close_series, high_series, low_series, atr14,
             BIG_CANDLE_AVG_LEN, SHADOW_TO_BODY_RATIO, MAX_OPPOSITE_SHADOW_PCT,
@@ -1543,6 +1651,10 @@ def detect_signal(df, state, symbol):
             )
             
             if stop_price is not None and target_price is not None:
+                # ذخیره Stop و Target در state
+                state.stored_long_stop = stop_price
+                state.stored_long_tp = target_price
+                
                 details = [
                     f"✅ priceLowerLow and rsiHigherLowOnTroughs",
                     f"✅ priceLowerLow and macdLineHigherLowOnTroughs",
@@ -1594,9 +1706,7 @@ def detect_signal(df, state, symbol):
         hidden_bullish_cond3_macdh = price_higher_low and hist_lower_low and both_troughs_red and macd_color_low
         hidden_bullish_base3 = price_higher_low and hidden_bullish_cond3_macdh and hidden_bullish_cond1_rsi and hidden_bullish_cond2_macdl
         
-        confirm_pos = min(last_confirmed_pos, n - 1)
-        
-        # استفاده از Candle Confirmation به جای calc_price_action
+        # استفاده از Candle Confirmation روی کندل Pivot
         pa_bullish, pa_bearish = candle_confirmation(
             open_series, close_series, high_series, low_series, atr14,
             BIG_CANDLE_AVG_LEN, SHADOW_TO_BODY_RATIO, MAX_OPPOSITE_SHADOW_PCT,
@@ -1615,6 +1725,10 @@ def detect_signal(df, state, symbol):
             )
             
             if stop_price is not None and target_price is not None:
+                # ذخیره Stop و Target در state
+                state.stored_long_stop = stop_price
+                state.stored_long_tp = target_price
+                
                 details = [
                     f"✅ priceHigherLow and rsiLowerLowOnTroughs",
                     f"✅ priceHigherLow and macdLineLowerLowOnTroughs",
@@ -1665,9 +1779,7 @@ def detect_signal(df, state, symbol):
         hidden_bearish_cond3_macdh = price_lower_high and hist_higher_high and both_peaks_green and macd_color_high
         hidden_bearish_base3 = price_lower_high and hidden_bearish_cond3_macdh and hidden_bearish_cond1_rsi and hidden_bearish_cond2_macdl
         
-        confirm_pos = min(last_confirmed_pos, n - 1)
-        
-        # استفاده از Candle Confirmation به جای calc_price_action
+        # استفاده از Candle Confirmation روی کندل Pivot
         pa_bullish, pa_bearish = candle_confirmation(
             open_series, close_series, high_series, low_series, atr14,
             BIG_CANDLE_AVG_LEN, SHADOW_TO_BODY_RATIO, MAX_OPPOSITE_SHADOW_PCT,
@@ -1686,6 +1798,10 @@ def detect_signal(df, state, symbol):
             )
             
             if stop_price is not None and target_price is not None:
+                # ذخیره Stop و Target در state
+                state.stored_short_stop = stop_price
+                state.stored_short_tp = target_price
+                
                 details = [
                     f"✅ priceLowerHigh and rsiHigherHighOnPeaks",
                     f"✅ priceLowerHigh and macdLineHigherHighOnPeaks",
