@@ -10,6 +10,8 @@ import hashlib
 import logging
 import requests
 import pandas as pd
+import numpy as np
+
 
 from config import (
     BASE_URL,
