@@ -8,6 +8,7 @@ import threading
 import logging
 import requests
 from flask import Flask
+import numpy as np
 
 from config import (
     API_KEY,
