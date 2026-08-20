@@ -8,6 +8,7 @@ import re
 import json
 import logging
 import requests
+import numpy as np
 from datetime import datetime, timezone, timedelta
 
 from config import (
